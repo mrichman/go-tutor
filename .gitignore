@@ -1,0 +1,33 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*~
+
+# Node (only used by the optional proxy servers)
+node_modules/
+npm-debug.log*
+yarn-error.log*
+
+# Logs / temp
+*.log
+tmp/
+.cache/
+
+# Secrets / local env (e.g. ANTHROPIC_API_KEY, KataGo paths)
+.env
+.env.*
+*.local
+
+# KataGo artifacts (don't commit big models or tuning caches)
+*.bin.gz
+*.txt.gz
+KataGoData/
+
+# SGF games saved/exported during play (but keep test fixtures)
+*.sgf
+!test/*.sgf

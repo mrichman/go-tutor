@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Go Tutor — learn Baduk</title>
+  <link rel="stylesheet" href="css/style.css?v=13" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">●</span><span class="logo white">○</span>
+      <h1>Go&nbsp;Tutor</h1>
+      <span class="tag">learn Baduk · single player</span>
+    </div>
+    <nav class="tabs">
+      <button class="tab active" data-view="play">Play</button>
+      <button class="tab" data-view="learn">Tutorial</button>
+      <button class="tab" data-view="problems">Problems</button>
+      <button class="tab" data-view="progress">Progress</button>
+    </nav>
+    <div class="settings">
+      <button id="soundToggle" class="icon-btn" title="Toggle sound">🔊</button>
+      <select id="themeSelect" title="Board theme" aria-label="Board theme">
+        <option value="classic">Classic</option>
+        <option value="dark">Dark</option>
+        <option value="contrast">High contrast</option>
+      </select>
+    </div>
+    <div class="rankbox" id="rankbox" title="Your estimated rank">
+      <span class="rank-label" id="rankLabel">—</span>
+      <span class="rank-sub" id="rankSub">unranked</span>
+    </div>
+  </header>
+
+  <main>
+    <!-- ============ PLAY VIEW ============ -->
+    <section id="view-play" class="view active">
+      <div class="board-wrap">
+        <div class="zoom-bar">
+          <button id="zoomOut" title="Zoom out" aria-label="Zoom out">−</button>
+          <input id="zoomRange" type="range" min="60" max="280" step="10" value="100"
+                 aria-label="Board zoom" />
+          <button id="zoomIn" title="Zoom in" aria-label="Zoom in">+</button>
+          <button id="zoomFit" title="Fit board to window">Fit</button>
+          <span id="zoomPct" class="zoom-pct">100%</span>
+        </div>
+        <div class="board-scroll">
+          <div id="boardHost" class="board-host"></div>
+        </div>
+        <div class="board-foot">
+          <span id="turnIndicator" class="turn">Black to move</span>
+          <span id="statusMsg" class="status"></span>
+        </div>
+      </div>
+
+      <aside class="sidebar">
+        <div class="panel">
+          <h3>New game <span id="engineBadge" class="coach-status" title="Opponent engine">built-in</span></h3>
+          <label class="row">Board size
+            <select id="sizeSel">
+              <option value="9">9 × 9 (quick)</option>
+              <option value="13">13 × 13</option>
+              <option value="19" selected>19 × 19 (full)</option>
+            </select>
+          </label>
+          <label class="row">Difficulty
+            <select id="diffSel">
+              <option value="adaptive" selected>Adaptive (recommended)</option>
+              <option value="0.1">Very easy</option>
+              <option value="0.3">Easy</option>
+              <option value="0.5">Medium</option>
+              <option value="0.7">Hard</option>
+              <option value="0.9">Very hard</option>
+            </select>
+          </label>
+          <label class="row">Your color
+            <select id="colorSel">
+              <option value="1" selected>Black (move first)</option>
+              <option value="2">White</option>
+            </select>
+          </label>
+          <div id="adaptiveInfo" class="hint-line"></div>
+          <label class="row">Move speed
+            <select id="speedSel">
+              <option value="normal">Normal</option>
+              <option value="fast">Fast</option>
+              <option value="instant">Instant</option>
+            </select>
+          </label>
+          <button id="newGameBtn" class="primary">Start game</button>
+        </div>
+
+        <div class="panel">
+          <h3>Game</h3>
+          <div class="btn-grid">
+            <button id="passBtn">Pass</button>
+            <button id="resignBtn">Resign</button>
+            <button id="hintBtn">Hint</button>
+            <button id="undoBtn">Undo</button>
+          </div>
+          <div class="captures">
+            <span>Captures — Black: <b id="capB">0</b></span>
+            <span>White: <b id="capW">0</b></span>
+          </div>
+        </div>
+
+        <div class="panel" id="scorePanel" hidden>
+          <h3>Score the game</h3>
+          <p class="hint-line" id="scoreHint">Both players passed. Click stones that are <b>dead</b> (cannot live) to remove them, then accept.</p>
+          <div class="score-readout" id="scoreReadout">—</div>
+          <div class="btn-grid">
+            <button id="acceptScoreBtn" class="primary">Accept &amp; finish</button>
+            <button id="resumeBtn">Resume play</button>
+          </div>
+        </div>
+
+        <div class="panel" id="historyPanel">
+          <h3>Move history
+            <span id="reviewBadge" class="coach-status" hidden>reviewing</span>
+          </h3>
+          <div class="hist-controls">
+            <button id="histFirst" title="First">⏮</button>
+            <button id="histPrev" title="Previous">◀</button>
+            <button id="histNext" title="Next">▶</button>
+            <button id="histLive" title="Back to current position">Live</button>
+          </div>
+          <ol id="moveList" class="move-list"></ol>
+          <div class="sgf-controls">
+            <button id="saveSgfBtn" title="Download this game as an SGF file">Save SGF</button>
+            <button id="loadSgfBtn" title="Load a game from an SGF file">Load SGF</button>
+            <button id="analyzeBtn" title="Analyze the finished game" hidden>Analyze</button>
+            <input id="sgfFile" type="file" accept=".sgf,application/x-go-sgf,text/plain" hidden />
+          </div>
+          <ol id="momentList" class="moment-list" hidden></ol>
+        </div>
+
+        <div class="panel coach">
+          <h3>Coach
+            <span id="coachStatus" class="coach-status" title="Claude coach connection">offline tips</span>
+          </h3>
+          <div id="coachText" class="coach-text">Start a game and I'll comment on the moves. Want live Claude coaching? See the README to run the local coach proxy.</div>
+        </div>
+      </aside>
+    </section>
+
+    <!-- ============ LEARN VIEW ============ -->
+    <section id="view-learn" class="view">
+      <div class="board-wrap">
+        <div id="lessonBoardHost" class="board-host"></div>
+        <div class="board-foot">
+          <span id="lessonStatus" class="status"></span>
+        </div>
+      </div>
+      <aside class="sidebar">
+        <div class="panel">
+          <h3>Lessons</h3>
+          <ul id="lessonList" class="lesson-list"></ul>
+        </div>
+        <div class="panel">
+          <h3 id="lessonTitle">Pick a lesson</h3>
+          <p id="lessonIntro" class="lesson-intro">Each lesson teaches one core idea on a small board, with hands-on tasks.</p>
+          <div id="lessonStep" class="lesson-step"></div>
+          <div class="btn-grid">
+            <button id="lessonPrev">Back</button>
+            <button id="lessonNext" class="primary">Next</button>
+          </div>
+        </div>
+      </aside>
+    </section>
+
+    <!-- ============ PROBLEMS VIEW ============ -->
+    <section id="view-problems" class="view">
+      <div class="board-wrap">
+        <div id="problemBoardHost" class="board-host"></div>
+        <div class="board-foot">
+          <span id="problemStatus" class="status"></span>
+        </div>
+      </div>
+      <aside class="sidebar">
+        <div class="panel">
+          <h3>Problems <span id="problemSolvedCount" class="coach-status">0 solved</span></h3>
+          <div class="problem-filters">
+            <select id="problemCategory" aria-label="Category"></select>
+            <select id="problemDifficulty" aria-label="Difficulty">
+              <option value="0">Any level</option>
+              <option value="1">★ easy</option>
+              <option value="2">★★ medium</option>
+              <option value="3">★★★ hard</option>
+            </select>
+          </div>
+          <div class="problem-filters">
+            <button id="problemRandom" title="Jump to a random unsolved problem">Random unsolved</button>
+            <button id="problemNext" title="Next problem in the list">Next ▶</button>
+          </div>
+          <ul id="problemList" class="lesson-list problem-list"></ul>
+        </div>
+        <div class="panel">
+          <h3 id="problemTitle">Pick a problem</h3>
+          <p id="problemPrompt" class="lesson-intro">Find the key move. Life-and-death puzzles sharpen reading faster than anything else.</p>
+          <div id="problemFeedback" class="lesson-step"></div>
+          <div class="btn-grid">
+            <button id="problemHint">Hint</button>
+            <button id="problemReset">Reset</button>
+          </div>
+        </div>
+      </aside>
+    </section>
+
+    <!-- ============ PROGRESS VIEW ============ -->
+    <section id="view-progress" class="view">
+      <div class="progress-wrap">
+        <div class="panel big">
+          <h3>Your journey to 2 dan</h3>
+          <div class="ladder">
+            <div class="ladder-fill" id="ladderFill"></div>
+            <div class="ladder-marker" id="ladderMarker"><span id="ladderTag">—</span></div>
+          </div>
+          <div class="ladder-scale">
+            <span>18k</span><span>10k</span><span>5k</span><span>1k</span><span>1d</span><span>2d</span>
+          </div>
+          <div class="stat-grid">
+            <div class="stat"><b id="statRank">—</b><span>current rank</span></div>
+            <div class="stat"><b id="statGames">0</b><span>games</span></div>
+            <div class="stat"><b id="statWins">0</b><span>wins</span></div>
+            <div class="stat"><b id="statBest">—</b><span>best rank</span></div>
+          </div>
+          <h4>Rank over time</h4>
+          <div id="chartRank" class="chart"></div>
+          <h4>Win rate by board size</h4>
+          <div id="chartWinRate" class="chart"></div>
+          <h4>Problems solved by category</h4>
+          <div id="chartProblems" class="chart"></div>
+          <h4>Recent games</h4>
+          <table class="hist"><thead><tr><th>#</th><th>Size</th><th>Result</th><th>Margin</th><th>Opp</th><th>Rank after</th></tr></thead>
+            <tbody id="histBody"></tbody></table>
+          <h4>Lessons completed</h4>
+          <div id="lessonProgress" class="lesson-progress"></div>
+          <button id="resetBtn" class="danger">Reset all progress</button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- scripts: classic, order matters; no build step.
+       The ?v= query busts the browser cache when files change — bump it on edits. -->
+  <script src="js/engine.js?v=13"></script>
+  <script src="js/bot.js?v=13"></script>
+  <script src="js/ranking.js?v=13"></script>
+  <script src="js/tutorial.js?v=13"></script>
+  <script src="js/solver.js?v=13"></script>
+  <script src="js/generator.js?v=13"></script>
+  <script src="js/problems.js?v=13"></script>
+  <script src="js/sgf.js?v=13"></script>
+  <script src="js/coach.js?v=13"></script>
+  <script src="js/board.js?v=13"></script>
+  <script src="js/app.js?v=13"></script>
+</body>
+</html>
