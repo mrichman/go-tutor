@@ -8,6 +8,9 @@ Thumbs.db
 *.swp
 *~
 
+# Cortex Code internal (plans, session state)
+.snowflake/
+
 # Node (only used by the optional proxy servers)
 node_modules/
 npm-debug.log*
@@ -31,3 +34,7 @@ KataGoData/
 # SGF games saved/exported during play (but keep test fixtures)
 *.sgf
 !test/*.sgf
+
+gtp_logs/
+*.log
+

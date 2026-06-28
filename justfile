@@ -41,6 +41,8 @@ dev:
 # Paths to your Homebrew KataGo install (version-independent symlinks).
 katago_model := "/opt/homebrew/share/katago/g170e-b20c256x2-s5303129600-d1228401921.bin.gz"
 katago_config := "/opt/homebrew/share/katago/configs/gtp_example.cfg"
+# Optional human-like model (download separately, e.g. b18c384nbt-humanv0.bin.gz).
+katago_human_model := env_var_or_default("KATAGO_HUMAN_MODEL", "")
 
 # Start the KataGo proxy wired to your Homebrew install (strong opponent).
 katago:
@@ -73,6 +75,30 @@ play:
 # Start the KataGo proxy with the built-in mock engine (no KataGo needed).
 katago-mock:
     KATAGO_PATH="node" KATAGO_ARGS="server/mock-gtp.js" node server/katago-server.js
+
+# Human-like KataGo: set KATAGO_HUMAN_MODEL to a downloaded human model, then
+# the opponent plays at your estimated rank (humanSLProfile rank_Nk/Nd).
+play-human:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ -z "{{katago_human_model}}" ]; then
+      echo "Set KATAGO_HUMAN_MODEL to a human model file first, e.g.:"
+      echo "  export KATAGO_HUMAN_MODEL=/path/to/b18c384nbt-humanv0.bin.gz"
+      echo "  just play-human"
+      exit 1
+    fi
+    python3 -m http.server {{port}} >/tmp/gotutor_http.log 2>&1 &
+    HTTP_PID=$!
+    export KATAGO_PATH=katago
+    export KATAGO_MODEL="{{katago_model}}"
+    export KATAGO_CONFIG="{{katago_config}}"
+    export KATAGO_HUMAN_MODEL="{{katago_human_model}}"
+    export KATAGO_OVERRIDE="numSearchThreads=$(sysctl -n hw.ncpu),logDir=,logToStderr=false,ponderingEnabled=false,maxVisits=50"
+    node server/katago-server.js &
+    KATA_PID=$!
+    trap "kill $HTTP_PID $KATA_PID 2>/dev/null || true" EXIT
+    echo "App: http://localhost:{{port}}/index.html  (human-like KataGo)"
+    wait
 
 # Stop any stray static server on the configured port.
 stop:

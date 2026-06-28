@@ -103,6 +103,12 @@
         "Without naming exact coordinates, describe in 2-3 sentences what they should be looking for in THIS position " +
         "(e.g. a group in danger, a big open area, a capture, the need to make eyes). Keep it conceptual so they still decide the move.";
     }
+    if (kind === "ask") {
+      return "You are a Go coach answering a student's question about the CURRENT position shown below. " +
+        "Question: \"" + ((ctx && ctx.question) || "") + "\". " +
+        "Answer in 2-4 sentences, grounded in this specific position, in plain encouraging language. " +
+        "If the question isn't about Go, gently steer back to the game.";
+    }
     // move
     return "You are a Go coach giving quick live commentary. In 2-3 short sentences, explain what just happened " +
       "and what the student should be thinking about now. Plain language, encouraging, beginner-friendly.";
@@ -129,6 +135,17 @@
       if (atari.enemyInAtari) return "An opponent group is in atari. Capturing it, or at least keeping it pinned, could be a big move.";
       if (game.moveNumber < 8) return "It's the opening. Favour the corners and the 3rd/4th lines — they make territory efficiently. Spread out rather than crowding one area.";
       return "Look for the biggest open area and for any group (yours or theirs) that is short on liberties. Strengthen weak groups before grabbing territory.";
+    }
+    if (kind === "ask") {
+      var a = findAtari(game, ctx.playerColor);
+      var lead = "";
+      var sc = game.scoreArea ? game.scoreArea() : null;
+      if (sc) lead = " Right now the rough area count is Black " + sc.scoreBlack + ", White " + sc.scoreWhite + ".";
+      var focus = a.mineInAtari ? "one of your groups is in atari — that's the priority."
+        : a.enemyInAtari ? "an opponent group is in atari — capturing it may be big."
+        : "no group is in immediate danger, so think about the biggest open area and weak groups.";
+      return "(Offline tip — run the Claude coach proxy for a real answer.) Looking at the board, " + focus + lead +
+        " General guide: keep your groups connected, make two eyes when surrounded, and take big points in the opening.";
     }
     // move commentary
     var last = game.lastMove;

@@ -77,13 +77,15 @@
       }
     }
 
-    // layers for stones + markers + hover
+    // layers for stones + markers + hover + keyboard cursor
     this.stoneLayer = el(svgNS, "g", {});
     this.markLayer = el(svgNS, "g", {});
     this.hoverLayer = el(svgNS, "g", {});
+    this.cursorLayer = el(svgNS, "g", {});
     svg.appendChild(this.stoneLayer);
     svg.appendChild(this.markLayer);
     svg.appendChild(this.hoverLayer);
+    svg.appendChild(this.cursorLayer);
 
     // invisible click/hover overlay
     var overlay = el(svgNS, "rect", { x: 0, y: 0, width: dim, height: dim, class: "overlay", fill: "transparent" });
@@ -98,9 +100,44 @@
       if (p != null) self.onPlay(p);
     });
 
+    // keyboard accessibility: focusable board, arrow-key cursor, Enter/Space to play
+    svg.setAttribute("tabindex", "0");
+    svg.setAttribute("role", "application");
+    svg.setAttribute("aria-label", n + " by " + n + " Go board. Arrow keys move the cursor; Enter or Space plays a stone.");
+    this.cursor = null;
+    svg.addEventListener("focus", function () { if (self.cursor == null) self.cursor = ((n / 2) | 0) * n + ((n / 2) | 0); self._drawCursor(); });
+    svg.addEventListener("blur", function () { self.cursorLayer.innerHTML = ""; });
+    svg.addEventListener("keydown", function (ev) { self._key(ev); });
+
     host.appendChild(svg);
     this.svg = svg;
     this.svgNS = svgNS;
+  };
+
+  BoardView.prototype._key = function (ev) {
+    var n = this.size, k = ev.key;
+    if (this.cursor == null) this.cursor = ((n / 2) | 0) * n + ((n / 2) | 0);
+    var r = Math.floor(this.cursor / n), c = this.cursor % n, moved = true;
+    if (k === "ArrowUp") r = Math.max(0, r - 1);
+    else if (k === "ArrowDown") r = Math.min(n - 1, r + 1);
+    else if (k === "ArrowLeft") c = Math.max(0, c - 1);
+    else if (k === "ArrowRight") c = Math.min(n - 1, c + 1);
+    else if (k === "Enter" || k === " " || k === "Spacebar") {
+      ev.preventDefault();
+      if (this.interactive) this.onPlay(this.cursor);
+      return;
+    } else { moved = false; }
+    if (moved) { ev.preventDefault(); this.cursor = r * n + c; this._drawCursor(); }
+  };
+
+  BoardView.prototype._drawCursor = function () {
+    this.cursorLayer.innerHTML = "";
+    if (this.cursor == null) return;
+    var n = this.size, r = Math.floor(this.cursor / n), c = this.cursor % n;
+    var x = this.pad + c * this.cell, y = this.pad + r * this.cell, h = this.cell * 0.46;
+    this.cursorLayer.appendChild(el(this.svgNS, "rect", {
+      x: x - h, y: y - h, width: h * 2, height: h * 2, rx: 3, class: "kbd-cursor"
+    }));
   };
 
   BoardView.prototype._pointFromEvent = function (ev) {
@@ -155,13 +192,18 @@
       }
     }
     if (territory) {
+      var intensity = (overlay && overlay.intensity) || null;
       for (var tp in territory) {
         var t = +tp, tr = Math.floor(t / n), tc = t % n;
-        this.markLayer.appendChild(el(ns, "rect", {
-          x: pad + tc * cell - cell * 0.12, y: pad + tr * cell - cell * 0.12,
-          width: cell * 0.24, height: cell * 0.24,
+        var k = intensity ? Math.max(0.15, Math.min(1, intensity[tp] || 0)) : 1;
+        var half = cell * (0.10 + 0.10 * k);     // 0.10..0.20 of a cell
+        var rectEl = el(ns, "rect", {
+          x: pad + tc * cell - half, y: pad + tr * cell - half,
+          width: half * 2, height: half * 2,
           class: "terr " + (territory[tp] === E.BLACK ? "terr-black" : "terr-white")
-        }));
+        });
+        if (intensity) rectEl.setAttribute("fill-opacity", (0.25 + 0.65 * k).toFixed(2));
+        this.markLayer.appendChild(rectEl);
       }
     }
     if (numbers) {

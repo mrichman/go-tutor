@@ -141,6 +141,76 @@
           { type: "info", text: "Black walls off the top, White the bottom. Everything above the black wall is Black's territory; below the white wall is White's. The middle row is contested ('dame')." },
           { type: "info", text: "At the end, both players pass. We count area for each side, add komi to White, and whoever has more wins. You don't have to count by hand — the app does it for you." }
         ]
+      },
+      {
+        id: "ladder",
+        title: "8. The ladder (shicho)",
+        size: 7,
+        intro: "A ladder chases a stone in a zig-zag, keeping it in atari every move until it runs into the edge and is captured.",
+        setup: function () { return { stones: [ [W,1,1], [B,0,1], [B,1,0], [B,2,2] ] }; },
+        steps: [
+          { type: "info", text: "The white stone in the corner has two liberties. With the black stones already placed, a ladder works here." },
+          { type: "task", color: B, text: "Atari the white stone: play on one of its liberties so it has only ONE left.",
+            validate: function (game, p) {
+              var target = 1 * game.size + 1;
+              var nb = game.neighbors(target);
+              if (nb.indexOf(p) < 0 || game.board[p] !== 0) return { ok: false, msg: "Play directly next to the white stone, on an empty liberty." };
+              var t = game.trial(p, B);
+              if (!t.legal) return { ok: false, msg: "Not legal there." };
+              if (game.group(target, t.board).libCount === 1) return { ok: true, msg: "Atari! White must run, you atari again, and the staircase runs to the edge — captured." };
+              return { ok: false, msg: "That didn't reduce it to one liberty — try the other side." };
+            } },
+          { type: "info", text: "Key warning: if a friendly white stone sits in the ladder's path (a 'ladder breaker'), the chase fails and White escapes. Always read the ladder to the edge before starting it." }
+        ]
+      },
+      {
+        id: "net",
+        title: "9. The net (geta)",
+        size: 7,
+        intro: "When a ladder doesn't work, a 'net' can still catch a stone — a loose move that leaves the stone no way to run out.",
+        setup: function () { return { stones: [ [W,3,3], [B,2,2], [B,2,4], [B,4,2], [B,4,4] ] }; },
+        steps: [
+          { type: "info", text: "The white stone is loosely surrounded. A net doesn't touch the stone directly — it covers its escape routes so that every way out can be captured." },
+          { type: "info", text: "Nets are valuable because, unlike ladders, they don't depend on the whole board — no ladder-breaker can rescue the stone. Look for the net when a ladder fails." }
+        ]
+      },
+      {
+        id: "cut",
+        title: "10. Cutting & connecting",
+        size: 7,
+        intro: "Connecting your stones makes one strong group; cutting your opponent's apart creates two weak ones you can attack.",
+        setup: function () { return { stones: [ [B,3,2], [B,3,4], [W,2,3], [W,4,3] ] }; },
+        steps: [
+          { type: "info", text: "White is threatening to cut your two black stones apart at the point between them. A cut would leave you with two weak groups." },
+          { type: "task", color: B, text: "Connect your two stones — play the single point between them.",
+            validate: function (game, p) {
+              var n = game.size, A = 3 * n + 2, Bp = 3 * n + 4, gap = 3 * n + 3;
+              if (p !== gap) return { ok: false, msg: "Play the one empty point directly between your two stones." };
+              var t = game.trial(p, B);
+              if (!t.legal) return { ok: false, msg: "Not legal there." };
+              var grp = game.group(p, t.board), s = {};
+              grp.stones.forEach(function (x) { s[x] = 1; });
+              if (s[A] && s[Bp]) return { ok: true, msg: "Connected! One solid group is far safer than two cuttable stones." };
+              return { ok: false, msg: "That didn't link them — connect at the gap." };
+            } },
+          { type: "info", text: "The reverse is just as powerful: when your opponent leaves a cutting point, severing their stones into two weak groups is a strong attack." }
+        ]
+      },
+      {
+        id: "endgame",
+        title: "11. Endgame & counting",
+        size: 9,
+        intro: "In the endgame you fill the boundaries. The winner is decided by who controls more points, so playing the biggest remaining move matters.",
+        setup: function () {
+          var stones = [];
+          for (var c = 0; c < 9; c++) { stones.push([B, 3, c]); stones.push([W, 5, c]); }
+          return { stones: stones };
+        },
+        steps: [
+          { type: "info", text: "Your score = your stones + the empty points only you surround, and White adds komi. Here Black holds the top, White the bottom." },
+          { type: "info", text: "Endgame moves come in two flavours: 'sente' (your opponent must respond, so you keep the initiative) and 'gote' (they don't). Take sente moves first, then the biggest gote points." },
+          { type: "info", text: "You never have to count by hand — pass twice and the app scores the board for you. But knowing roughly who's ahead tells you whether to play safe or start a fight." }
+        ]
       }
     ];
   }

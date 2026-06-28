@@ -19,11 +19,16 @@
     zoom: 100,
     scoring: null,        // {dead:{p:true}, active:bool} during the scoring phase
     reviewIndex: null,    // null = live; else number of moves applied for review
-    loaded: false         // true when viewing an imported SGF (no bot, unrated)
+    loaded: false,        // true when viewing an imported SGF (no bot, unrated)
+    influence: { on: false, ownership: null, size: 0, heat: true },  // KataGo territory overlay (heat = graded)
+    variation: null,      // {base:int, game:GoGame} when exploring a hypothetical line
+    estimate: false,      // offline score-estimate overlay toggle
+    lines: []             // saved variation lines: [{base, name, moves:[{move,color}]}]
   };
 
   var lesson = { view: null, game: null, current: null, stepIdx: 0 };
   var prob = { view: null, game: null, current: null, solved: false, filtered: null };
+  var open = { view: null, game: null, current: null, done: false };
 
   document.addEventListener("DOMContentLoaded", init);
 
@@ -32,7 +37,9 @@
     bindPlayControls();
     bindProgressControls();
     bindProblemControls();
+    bindOpeningControls();
     bindSettings();
+    bindProfileControls();
     bindGlobalKeys();
     probeKatago();
     buildLessonList();
@@ -60,6 +67,7 @@
         $("#view-" + v).classList.add("active");
         if (v === "progress") renderProgress();
         if (v === "learn") enterLearn();
+        if (v === "opening") enterOpening();
         if (v === "problems") enterProblems();
         if (v === "play" && state.view) state.view._build && state.view.render(state.game.board, state.game.lastMove);
       });
@@ -77,6 +85,11 @@
     $("#resignBtn").addEventListener("click", humanResign);
     $("#undoBtn").addEventListener("click", undo);
     $("#hintBtn").addEventListener("click", askHint);
+    $("#influenceBtn").addEventListener("click", toggleInfluence);
+    $("#heatBtn").addEventListener("click", toggleHeat);
+    $("#estimateBtn").addEventListener("click", toggleEstimate);
+    $("#coachAskBtn").addEventListener("click", askCoachQuestion);
+    $("#coachAsk").addEventListener("keydown", function (e) { if (e.key === "Enter") askCoachQuestion(); });
     $("#zoomIn").addEventListener("click", function () { setZoom(state.zoom + 20); });
     $("#zoomOut").addEventListener("click", function () { setZoom(state.zoom - 20); });
     $("#zoomFit").addEventListener("click", fitZoom);
@@ -87,10 +100,16 @@
     $("#histPrev").addEventListener("click", function () { stepReview(-1); });
     $("#histNext").addEventListener("click", function () { stepReview(1); });
     $("#histLive").addEventListener("click", gotoLive);
+    $("#varUndoBtn").addEventListener("click", variationUndo);
+    $("#saveLineBtn").addEventListener("click", saveCurrentLine);
+    $("#varExitBtn").addEventListener("click", exitVariation);
     $("#saveSgfBtn").addEventListener("click", saveSGF);
     $("#loadSgfBtn").addEventListener("click", function () { $("#sgfFile").click(); });
     $("#sgfFile").addEventListener("change", onSgfFileChosen);
+    $("#importSgfBtn").addEventListener("click", function () { $("#sgfCollection").click(); });
+    $("#sgfCollection").addEventListener("change", onSgfCollectionChosen);
     $("#analyzeBtn").addEventListener("click", analyzeGame);
+    $("#exportReviewBtn").addEventListener("click", exportReviewSGF);
   }
 
   /* ---------------- zoom ---------------- */
@@ -122,14 +141,67 @@
 
   /* ---------------- settings: sound, theme, speed ---------------- */
   var SPEED_MS = { instant: 0, fast: 120, normal: 260 };
-  var audioCtx = null, noiseBuf = null;
+  var audioCtx = null, noiseBuf = null, clickBuffer = null, clickDecoding = false, masterGain = null;
 
   function ensureAudio() {
     try {
       audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
       if (audioCtx.state === "suspended" && audioCtx.resume) audioCtx.resume();
+      if (!masterGain) {
+        masterGain = audioCtx.createGain();
+        masterGain.gain.value = volume();
+        masterGain.connect(audioCtx.destination);
+      }
+      decodeClickSample();
       return audioCtx;
     } catch (e) { return null; }
+  }
+  function volume() { var v = state.profile.soundVolume; return v == null ? 0.8 : v; }
+  function audioOut() { return masterGain || audioCtx.destination; }
+
+  // Simple synthesized tone, routed through the master volume.
+  function tone(freq, durMs, type, gain) {
+    if (!state.profile.soundOn) return;
+    var ctx = ensureAudio(); if (!ctx) return;
+    var t = ctx.currentTime, o = ctx.createOscillator(), g = ctx.createGain();
+    o.type = type || "sine"; o.frequency.setValueAtTime(freq, t);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(gain || 0.2, t + 0.008);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + durMs / 1000);
+    o.connect(g); g.connect(audioOut());
+    o.start(t); o.stop(t + durMs / 1000 + 0.02);
+  }
+  function soundPass() { tone(300, 160, "sine", 0.18); }
+  function soundIllegal() { tone(150, 110, "square", 0.16); }
+  function soundGameOver() { tone(440, 160, "sine", 0.2); setTimeout(function () { tone(294, 240, "sine", 0.2); }, 150); }
+
+  // Decode the embedded base64 stone-click WAV (js/sound-data.js) once.
+  function decodeClickSample() {
+    if (clickBuffer || clickDecoding || !audioCtx) return;
+    var data = window.GT && GT.soundData && GT.soundData.click;
+    if (!data) return;
+    clickDecoding = true;
+    try {
+      var b64 = data.slice(data.indexOf(",") + 1);
+      var bin = atob(b64), len = bin.length, bytes = new Uint8Array(len);
+      for (var i = 0; i < len; i++) bytes[i] = bin.charCodeAt(i);
+      audioCtx.decodeAudioData(bytes.buffer, function (buf) { clickBuffer = buf; },
+        function () { clickDecoding = false; });
+    } catch (e) { clickDecoding = false; }
+  }
+
+  // Play the decoded sample with slight pitch/volume variation. Returns false
+  // if the sample isn't ready (caller then falls back to synthesis).
+  function playSample(rate, gain) {
+    if (!state.profile.soundOn) return true;       // sound off: treat as handled
+    var ctx = ensureAudio();
+    if (!ctx || !clickBuffer) return false;
+    var src = ctx.createBufferSource(); src.buffer = clickBuffer;
+    src.playbackRate.value = rate * (1 + (Math.random() - 0.5) * 0.12);
+    var g = ctx.createGain(); g.gain.value = gain * (0.9 + Math.random() * 0.2);
+    src.connect(g); g.connect(audioOut());
+    src.start();
+    return true;
   }
 
   // Cached short white-noise buffer for the percussive part of the clack.
@@ -160,7 +232,7 @@
     ng.gain.setValueAtTime(0.0001, t);
     ng.gain.exponentialRampToValueAtTime(opts.clickGain, t + 0.002);
     ng.gain.exponentialRampToValueAtTime(0.0001, t + opts.clickDecay);
-    src.connect(bp); bp.connect(ng); ng.connect(ctx.destination);
+    src.connect(bp); bp.connect(ng); ng.connect(audioOut());
     src.start(t); src.stop(t + opts.clickDecay + 0.02);
 
     // 2) low "wood" body = a quick damped sine
@@ -169,16 +241,17 @@
     og.gain.setValueAtTime(0.0001, t);
     og.gain.exponentialRampToValueAtTime(opts.bodyGain, t + 0.004);
     og.gain.exponentialRampToValueAtTime(0.0001, t + opts.bodyDecay);
-    o.connect(og); og.connect(ctx.destination);
+    o.connect(og); og.connect(audioOut());
     o.start(t); o.stop(t + opts.bodyDecay + 0.02);
   }
 
   function soundPlace() {
-    clack({ click: 2400, clickGain: 0.35, clickDecay: 0.045, body: 190, bodyGain: 0.16, bodyDecay: 0.07 });
+    // prefer the embedded recorded-style sample; fall back to live synthesis
+    if (!playSample(1.0, 0.9)) clack({ click: 2400, clickGain: 0.35, clickDecay: 0.045, body: 190, bodyGain: 0.16, bodyDecay: 0.07 });
   }
   function soundCapture() {
-    // a firmer, lower clack then a soft tail (stones lifted off)
-    clack({ click: 1700, clickGain: 0.4, clickDecay: 0.06, body: 130, bodyGain: 0.2, bodyDecay: 0.11 });
+    // lower-pitched, weightier version of the same sample for captures
+    if (!playSample(0.6, 1.0)) clack({ click: 1700, clickGain: 0.4, clickDecay: 0.06, body: 130, bodyGain: 0.2, bodyDecay: 0.11 });
   }
 
   function botDelay() { return SPEED_MS[state.profile.moveSpeed] != null ? SPEED_MS[state.profile.moveSpeed] : 260; }
@@ -208,13 +281,70 @@
     $("#speedSel").addEventListener("change", function (e) {
       state.profile.moveSpeed = e.target.value; R.save(state.profile);
     });
+    $("#volRange").addEventListener("input", function (e) {
+      state.profile.soundVolume = (+e.target.value) / 100;
+      if (masterGain) masterGain.gain.value = volume();
+      R.save(state.profile);
+    });
     $("#themeSelect").value = state.profile.theme || "classic";
     $("#speedSel").value = state.profile.moveSpeed || "normal";
+    $("#volRange").value = Math.round(volume() * 100);
     applyTheme(state.profile.theme);
     updateSoundIcon();
   }
   function updateSoundIcon() {
     $("#soundToggle").textContent = state.profile.soundOn ? "\uD83D\uDD0A" : "\uD83D\uDD07";
+  }
+
+  /* ---------------- profiles ---------------- */
+  function bindProfileControls() {
+    populateProfileSelect();
+    $("#profileSel").addEventListener("change", function (e) {
+      var v = e.target.value;
+      if (v === "__new__") { newProfilePrompt(); populateProfileSelect(); return; }
+      applyProfile(R.switchProfile(v));
+    });
+    $("#profileNew").addEventListener("click", newProfilePrompt);
+    $("#profileDel").addEventListener("click", function () {
+      var names = R.listProfiles();
+      if (names.length <= 1) { setStatus("Can't delete your only profile."); return; }
+      if (!window.confirm("Delete profile \u201C" + R.activeName() + "\u201D and its progress?")) return;
+      applyProfile(R.deleteProfile(R.activeName()));
+      populateProfileSelect();
+    });
+  }
+
+  function populateProfileSelect() {
+    var sel = $("#profileSel");
+    sel.innerHTML = "";
+    R.listProfiles().forEach(function (n) {
+      var o = document.createElement("option"); o.value = n; o.textContent = n; sel.appendChild(o);
+    });
+    var nw = document.createElement("option"); nw.value = "__new__"; nw.textContent = "New profile…"; sel.appendChild(nw);
+    sel.value = R.activeName();
+  }
+
+  function newProfilePrompt() {
+    var name = window.prompt("New profile name:", "Player " + (R.listProfiles().length + 1));
+    if (name == null || !name.trim()) { populateProfileSelect(); return; }
+    applyProfile(R.createProfile(name.trim()));
+    populateProfileSelect();
+  }
+
+  // Make `profile` the active one and re-sync everything that reads it.
+  function applyProfile(profile) {
+    state.profile = profile;
+    $("#volRange").value = Math.round(volume() * 100);
+    if (masterGain) masterGain.gain.value = volume();
+    $("#themeSelect").value = profile.theme || "classic";
+    $("#speedSel").value = profile.moveSpeed || "normal";
+    applyTheme(profile.theme);
+    updateSoundIcon();
+    updateRankUI();
+    if ($("#view-progress").classList.contains("active")) renderProgress();
+    if ($("#view-opening").classList.contains("active")) buildOpeningList();
+    if ($("#view-problems").classList.contains("active")) { rebuildProblemList(); updateDueButton(); }
+    setStatus("Switched to profile \u201C" + R.activeName() + "\u201D.");
   }
 
   // Flash captured stones briefly, then restore.
@@ -302,6 +432,13 @@
     state.scoring = null;
     state.reviewIndex = null;
     state.loaded = false;
+    state.variation = null; $("#variationBar").hidden = true;
+    state.estimate = false;
+    state.lines = []; renderLineList();
+    state.influence.on = false; state.influence.ownership = null;
+    $("#influenceBtn").textContent = "Show influence (KataGo)";
+    $("#heatBtn").hidden = true;
+    $("#winrateReadout").hidden = true;
     $("#scorePanel").hidden = true;
     $("#momentList").hidden = true;
     redraw();
@@ -349,25 +486,143 @@
   }
 
   function humanMove(p) {
-    if (state.loaded) { setStatus("This is a loaded game (review only). Start a New game to play."); return; }
-    if (state.reviewIndex != null) { setStatus("You're reviewing an earlier position — press Live to continue."); return; }
     if (state.scoring && state.scoring.active) { toggleDeadAt(p); return; }
+    // Reviewing (or a loaded game): clicks explore a hypothetical "variation".
+    if (state.variation || state.reviewIndex != null || state.loaded) { variationPlay(p); return; }
     if (state.busy || !state.game || state.game.ended) return;
     if (state.game.toMove !== state.playerColor) return;
     var res = state.game.play(p, state.playerColor);
     if (!res.ok) {
       setStatus(reasonText(res.reason));
+      soundIllegal();
+      announce("Illegal move: " + reasonText(res.reason));
       return;
     }
     redraw();
     buildMoveList();
-    if (res.captured && res.captured.length) { soundCapture(); flashCaptures(res.captured); } else soundPlace();
+    if (p === PASS) soundPass();
+    else if (res.captured && res.captured.length) { soundCapture(); flashCaptures(res.captured); }
+    else soundPlace();
+    announceMove(state.playerColor, p, res.captured, state.game);
     if (state.game.scoringPhase) return enterScoring();
     setStatus("");
     state.busy = true;
     if (botDelay() > 0) setStatus("Opponent is thinking…");
     setTimeout(botMove, botDelay());
   }
+
+  /* ---------------- variations (branch & explore in review) ---------------- */
+  function variationPlay(p) {
+    if (p === PASS) return;                       // passing isn't useful while exploring
+    if (!state.variation) {
+      var base = (state.reviewIndex != null) ? state.reviewIndex : state.game.history.length;
+      state.variation = { base: base, game: buildPosition(base) };
+    }
+    var vg = state.variation.game;
+    var res = vg.play(p, vg.toMove);
+    if (!res.ok) { setStatus(reasonText(res.reason)); soundIllegal(); return; }
+    if (res.captured && res.captured.length) soundCapture(); else soundPlace();
+    renderVariation();
+  }
+
+  function renderVariation() {
+    var v = state.variation, vg = v.game;
+    var numbers = {};
+    for (var i = v.base; i < vg.history.length; i++) {
+      var m = vg.history[i];
+      if (m.move !== PASS && vg.board[m.move] === m.color) numbers[m.move] = i - v.base + 1;
+    }
+    state.view.setInteractive(true);
+    state.view.render(vg.board, vg.lastMove, null, { numbers: numbers });
+    $("#capB").textContent = vg.captures[BLACK];
+    $("#capW").textContent = vg.captures[WHITE];
+    var n = vg.history.length - v.base;
+    $("#turnIndicator").textContent = "Variation from move " + v.base + " · " + n + " move" + (n === 1 ? "" : "s") +
+      " · " + (vg.toMove === BLACK ? "Black" : "White") + " to play";
+    $("#reviewBadge").hidden = false;
+    $("#variationBar").hidden = false;
+    $("#varUndoBtn").disabled = n <= 0;
+  }
+
+  function variationUndo() {
+    var v = state.variation;
+    if (!v || v.game.history.length <= v.base) { exitVariation(); return; }
+    var moves = v.game.history.slice(0, v.game.history.length - 1);
+    var fresh = buildPosition(v.base);            // main line up to the branch point
+    for (var i = v.base; i < moves.length; i++) fresh.play(moves[i].move, moves[i].color);
+    v.game = fresh;
+    if (v.game.history.length <= v.base) { exitVariation(); return; }
+    renderVariation();
+  }
+
+  function exitVariation() {
+    if (!state.variation) return;
+    var back = state.variation.base;
+    state.variation = null;
+    $("#variationBar").hidden = true;
+    if (state.reviewIndex != null || state.loaded) gotoMove(back);
+    else gotoLive();
+  }
+
+  // Save the current variation as a named line (kept for the session; persisted via SGF).
+  function saveCurrentLine() {
+    var v = state.variation;
+    if (!v || v.game.history.length <= v.base) { setStatus("Play a move in the variation first."); return; }
+    var moves = v.game.history.slice(v.base).map(function (m) { return { move: m.move, color: m.color }; });
+    var name = "From move " + v.base + " (#" + (state.lines.length + 1) + ")";
+    state.lines.push({ base: v.base, name: name, moves: moves });
+    renderLineList();
+    setStatus("Saved variation \u201C" + name + "\u201D (" + moves.length + " move" + (moves.length === 1 ? "" : "s") + ").");
+  }
+
+  function renderLineList() {
+    var wrap = $("#linesPanel"), ul = $("#lineList");
+    ul.innerHTML = "";
+    (state.lines || []).forEach(function (ln, i) {
+      var li = document.createElement("li");
+      var label = document.createElement("span");
+      label.className = "line-name";
+      label.textContent = ln.name + " · " + ln.moves.length + "mv";
+      label.title = "Replay this line";
+      label.addEventListener("click", function () { enterSavedLine(i); });
+      var del = document.createElement("button");
+      del.className = "line-del"; del.textContent = "\u00D7"; del.title = "Delete this line";
+      del.addEventListener("click", function (e) { e.stopPropagation(); deleteLine(i); });
+      var rn = document.createElement("button");
+      rn.className = "line-rn"; rn.textContent = "\u270E"; rn.title = "Rename this line";
+      rn.addEventListener("click", function (e) { e.stopPropagation(); renameLine(i); });
+      li.appendChild(label); li.appendChild(rn); li.appendChild(del);
+      ul.appendChild(li);
+    });
+    wrap.hidden = !(state.lines && state.lines.length);
+  }
+
+  function enterSavedLine(i) {
+    var ln = state.lines[i];
+    if (!ln) return;
+    if (ln.base > state.game.history.length) { setStatus("That line doesn't fit the current game."); return; }
+    var g = buildPosition(ln.base);
+    for (var k = 0; k < ln.moves.length; k++) {
+      var r = g.play(ln.moves[k].move, ln.moves[k].color);
+      if (!r.ok) break;   // tolerate lines that don't replay against this position
+    }
+    state.variation = { base: ln.base, game: g };
+    state.reviewIndex = ln.base;
+    renderVariation();
+    setStatus("Replaying \u201C" + ln.name + "\u201D — explore freely, or Return to game.");
+  }
+
+  function deleteLine(i) {
+    state.lines.splice(i, 1);
+    renderLineList();
+  }
+
+  function renameLine(i) {
+    var ln = state.lines[i]; if (!ln) return;
+    var name = window.prompt("Rename this line:", ln.name);
+    if (name != null && name.trim()) { ln.name = name.trim(); renderLineList(); }
+  }
+
 
   function botMove() {
     if (!state.game || state.game.ended || state.game.scoringPhase) { state.busy = false; return; }
@@ -392,10 +647,13 @@
       if (state.reviewIndex == null) redraw();
       buildMoveList();
       if (bres && bres.captured && bres.captured.length) { soundCapture(); if (state.reviewIndex == null) flashCaptures(bres.captured); }
-      else if (mv !== PASS) soundPlace();
+      else if (mv === PASS) soundPass();
+      else soundPlace();
+      announceMove(state.botColor, mv, bres && bres.captured, state.game);
       state.busy = false;
       if (state.game.scoringPhase) return enterScoring();
       setStatus("");
+      if (state.influence.on) refreshInfluence();
       if (state.game.moveNumber % 4 === 0) requestCoach("move");
       else setCoach(quickComment());
     });
@@ -438,6 +696,7 @@
     var el = $("#engineBadge"); if (!el) return;
     if (katagoReady) { el.textContent = "KataGo"; el.classList.add("live"); el.title = "Opponent: KataGo (local proxy)"; }
     else { el.textContent = "built-in"; el.classList.remove("live"); el.title = "Opponent: built-in heuristic (start the KataGo proxy for stronger play)"; }
+    var ib = $("#influenceBtn"); if (ib) ib.hidden = !katagoReady;
   }
 
   function fallbackMove(game) { return state.bot.chooseMove(game); }
@@ -484,6 +743,107 @@
       });
   }
 
+  /* ---------------- KataGo analysis: win-rate, score, territory overlay ---------------- */
+  function analyzePosition(game, cb) {
+    if (katagoReady === false) { cb(null); return; }
+    var size = game.size;
+    var moves = game.history.map(function (h) {
+      return { color: h.color === BLACK ? "b" : "w", coord: pointToGtp(size, h.move) };
+    });
+    fetch(KATAGO_URL + "/analyze", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ size: size, komi: game.komi, moves: moves })
+    }).then(function (r) { if (!r.ok) throw new Error("bad"); return r.json(); })
+      .then(function (j) { katagoReady = true; updateEngineBadge(); cb(j); })
+      .catch(function () { katagoReady = false; updateEngineBadge(); cb(null); });
+  }
+
+  // whiteOwnership in [-1,1] (+ = white) -> {point: color} for fairly-settled points
+  function ownershipTerritory(ownership, size, threshold) {
+    var terr = {}, thr = (typeof threshold === "number") ? threshold : 0.30;
+    if (!ownership) return terr;
+    for (var p = 0; p < ownership.length && p < size * size; p++) {
+      if (ownership[p] >= thr) terr[p] = WHITE;
+      else if (ownership[p] <= -thr) terr[p] = BLACK;
+    }
+    return terr;
+  }
+
+  // |ownership| per point (0..1) for heatmap opacity/size.
+  function ownershipIntensity(ownership, size) {
+    var out = {};
+    if (!ownership) return out;
+    for (var p = 0; p < ownership.length && p < size * size; p++) out[p] = Math.abs(ownership[p]);
+    return out;
+  }
+
+  function refreshInfluence() {
+    if (!state.influence.on || !state.game) return;
+    var g = state.game;
+    analyzePosition(g, function (res) {
+      if (!res) {
+        $("#winrateReadout").textContent = "Influence unavailable (KataGo proxy not running).";
+        state.influence.on = false; $("#influenceBtn").textContent = "Show influence (KataGo)";
+        return;
+      }
+      state.influence.ownership = res.ownership;
+      state.influence.size = res.size;
+      // readout from the human player's perspective
+      var winW = res.winrateWhite == null ? null : res.winrateWhite;
+      var youWin = winW == null ? null : (state.playerColor === WHITE ? winW : 1 - winW);
+      var lead = res.leadWhite;
+      var leadStr = (lead == null) ? "" :
+        (lead >= 0 ? "W+" + lead.toFixed(1) : "B+" + (-lead).toFixed(1));
+      var bw = winW == null ? "" : "B " + Math.round((1 - winW) * 100) + "% / W " + Math.round(winW * 100) + "%";
+      $("#winrateReadout").textContent =
+        (youWin == null ? "" : "You " + Math.round(youWin * 100) + "%   ") +
+        (bw ? "· " + bw + "   " : "") +
+        (leadStr ? "· score " + leadStr : "");
+      if (state.reviewIndex == null) redraw();
+    });
+  }
+
+  function toggleInfluence() {
+    state.influence.on = !state.influence.on;
+    var btn = $("#influenceBtn"), out = $("#winrateReadout");
+    btn.textContent = state.influence.on ? "Hide influence" : "Show influence (KataGo)";
+    out.hidden = !state.influence.on;
+    $("#heatBtn").hidden = !state.influence.on;
+    if (state.influence.on) {
+      state.estimate = false; $("#estimateBtn").textContent = "Estimate score";
+      out.textContent = "Analyzing…"; refreshInfluence();
+    } else { state.influence.ownership = null; if (state.reviewIndex == null) redraw(); }
+  }
+
+  // Switch the influence overlay between graded heatmap and crisp territory dots.
+  function toggleHeat() {
+    state.influence.heat = !state.influence.heat;
+    $("#heatBtn").textContent = state.influence.heat ? "Heatmap" : "Dots";
+    if (state.influence.on && state.reviewIndex == null) redraw();
+  }
+
+  // Offline rough score estimate: area scoring on the current board (no dead-stone
+  // removal), with territory dots. Approximate — best once boundaries are settled.
+  function toggleEstimate() {
+    if (!state.game) return;
+    state.estimate = !state.estimate;
+    var btn = $("#estimateBtn"), out = $("#winrateReadout");
+    btn.textContent = state.estimate ? "Hide estimate" : "Estimate score";
+    if (state.estimate) {
+      state.influence.on = false; state.influence.ownership = null;
+      $("#influenceBtn").textContent = "Show influence (KataGo)";
+      var s = state.game.scoreArea();
+      var margin = Math.abs(s.scoreBlack - s.scoreWhite);
+      var who = s.scoreBlack > s.scoreWhite ? "B+" : s.scoreWhite > s.scoreBlack ? "W+" : "even";
+      out.hidden = false;
+      out.textContent = "Estimate (rough): Black " + s.scoreBlack + " — White " + s.scoreWhite +
+        "  " + (who === "even" ? "even" : who + margin.toFixed(1));
+    } else {
+      out.hidden = true;
+    }
+    if (state.reviewIndex == null) redraw();
+  }
+
   function humanResign() {
     if (!state.game || state.game.ended || state.loaded) return;
     state.game.resign(state.playerColor);
@@ -509,9 +869,12 @@
         result = (s.winner === BLACK ? "B+" : "W+") + s.margin;
       }
     }
+    var lines = (state.lines || []).map(function (ln) {
+      return { base: ln.base, name: ln.name, moves: ln.moves.map(function (m) { return { color: m.color, point: m.move }; }) };
+    });
     return {
       size: g.size, komi: g.komi, handicap: state.handicap,
-      ab: ab, aw: aw, moves: moves, result: result,
+      ab: ab, aw: aw, moves: moves, result: result, lines: lines,
       meta: { date: new Date().toISOString().slice(0, 10) }
     };
   }
@@ -529,6 +892,32 @@
     setStatus("Saved " + a.download + " (" + state.game.history.length + " moves).");
   }
 
+  // Annotated SGF: same record as saveSGF, but with the review's per-move notes
+  // attached as C[] comments and a summary on the root node.
+  function exportReviewSGF() {
+    if (!state.game) return;
+    var rec = buildRecord();
+    var notes = state.reviewNotes || {};
+    rec.moves.forEach(function (m, i) {
+      var n = notes[i + 1]; // notes keyed by 1-based ply
+      if (n) m.comment = n;
+    });
+    var head = "Go Tutor review.";
+    if (rec.result) head += " Result: " + rec.result + ".";
+    var nNotes = Object.keys(notes).length;
+    if (nNotes) head += " " + nNotes + " key moment" + (nNotes === 1 ? "" : "s") + " annotated.";
+    rec.rootComment = head;
+    var text = GT.sgf.toSGF(rec);
+    var blob = new Blob([text], { type: "application/x-go-sgf" });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement("a");
+    var stamp = new Date().toISOString().replace(/[-:T]/g, "").slice(0, 13);
+    a.href = url; a.download = "gotutor-review-" + stamp + ".sgf";
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+    setStatus("Exported " + a.download + " with " + nNotes + " note" + (nNotes === 1 ? "" : "s") + ".");
+  }
+
   function onSgfFileChosen(ev) {
     var file = ev.target.files && ev.target.files[0];
     if (!file) return;
@@ -537,6 +926,54 @@
     reader.onerror = function () { setStatus("Could not read that file."); };
     reader.readAsText(file);
     ev.target.value = ""; // allow re-loading the same file
+  }
+
+  // Import several SGFs at once into a clickable study library.
+  function onSgfCollectionChosen(ev) {
+    var files = ev.target.files ? Array.prototype.slice.call(ev.target.files) : [];
+    if (!files.length) return;
+    var lib = [], pending = files.length;
+    files.forEach(function (file) {
+      var reader = new FileReader();
+      reader.onload = function () {
+        var text = String(reader.result), label = file.name.replace(/\.sgf$/i, "");
+        try {
+          var rec = GT.sgf.fromSGF(text);
+          var n = (rec.moves || []).length;
+          label += " · " + rec.size + "×" + rec.size + ", " + n + " moves" + (rec.result ? " (" + rec.result + ")" : "");
+          lib.push({ name: label, text: text });
+        } catch (e) { /* skip unparseable files */ }
+        if (--pending === 0) finishImport(lib);
+      };
+      reader.onerror = function () { if (--pending === 0) finishImport(lib); };
+      reader.readAsText(file);
+    });
+    ev.target.value = "";
+  }
+
+  function finishImport(lib) {
+    if (!lib.length) { setStatus("No readable SGF files in that selection."); return; }
+    lib.sort(function (a, b) { return a.name.localeCompare(b.name); });
+    state.library = lib;
+    renderLibrary();
+    setStatus("Imported " + lib.length + " game" + (lib.length === 1 ? "" : "s") + " — click one to load it.");
+    loadSGFText(lib[0].text);
+  }
+
+  function renderLibrary() {
+    var ul = $("#sgfLibrary");
+    ul.innerHTML = "";
+    (state.library || []).forEach(function (item, i) {
+      var li = document.createElement("li");
+      li.textContent = item.name;
+      li.title = "Load this game";
+      li.addEventListener("click", function () {
+        loadSGFText(item.text);
+        Array.prototype.forEach.call(ul.children, function (c, j) { c.classList.toggle("active", j === i); });
+      });
+      ul.appendChild(li);
+    });
+    ul.hidden = !ul.children.length;
   }
 
   function loadSGFText(text) {
@@ -549,6 +986,15 @@
     state.playerColor = BLACK; state.botColor = WHITE;
     state.loaded = true; state.rated = false;
     state.scoring = null; state.reviewIndex = null;
+    state.variation = null; $("#variationBar").hidden = true;
+    state.lines = (rec.lines || []).map(function (ln, i) {
+      return {
+        base: ln.base,
+        name: ln.name || ("Line from move " + ln.base + " (#" + (i + 1) + ")"),
+        moves: ln.moves.map(function (m) { return { move: m.point, color: m.color }; })
+      };
+    });
+    renderLineList();
     $("#scorePanel").hidden = true;
     $("#momentList").hidden = true;
     state.view = new GT.BoardView($("#boardHost"), {
@@ -557,11 +1003,11 @@
     if (state.profile.boardZoom) setZoom(state.profile.boardZoom); else fitZoom();
     redraw();
     buildMoveList();
-    state.view.setInteractive(false);
+    state.view.setInteractive(true);   // allow exploring variations on loaded games
     updateAnalyzeBtn();
     var note = built.illegal ? (" (" + built.illegal + " illegal move(s) skipped)") : "";
     setStatus("Loaded SGF — " + state.game.history.length + " moves" + note +
-      ". Use \u25C0 \u25B6 to review; Start game to play fresh.");
+      ". Use \u25C0 \u25B6 to review; click the board to explore a variation.");
     setCoach("Loaded a game record. Step through it with the history controls. Press Analyze for a review.");
   }
 
@@ -660,6 +1106,7 @@
   }
 
   function gotoMove(count) {
+    if (state.variation) { state.variation = null; $("#variationBar").hidden = true; }
     var total = state.game.history.length;
     count = Math.max(0, Math.min(total, count));
     if (count >= total && state.game.history.length) return gotoLive();
@@ -671,11 +1118,11 @@
       var mvp = hist[i].move;
       if (mvp !== PASS && pos.board[mvp] === hist[i].color) numbers[mvp] = i + 1;
     }
-    state.view.setInteractive(false);
+    state.view.setInteractive(true);   // clicks here branch into a variation
     state.view.render(pos.board, pos.lastMove, null, { numbers: numbers });
     $("#capB").textContent = pos.captures[BLACK];
     $("#capW").textContent = pos.captures[WHITE];
-    $("#turnIndicator").textContent = "Reviewing move " + count + " / " + total;
+    $("#turnIndicator").textContent = "Reviewing move " + count + " / " + total + " · click to explore a variation";
     $("#reviewBadge").hidden = false;
     highlightMove();
   }
@@ -687,6 +1134,7 @@
   }
 
   function gotoLive() {
+    state.variation = null; $("#variationBar").hidden = true;
     state.reviewIndex = null;
     $("#reviewBadge").hidden = true;
     if (state.scoring && state.scoring.active) renderScoring();
@@ -745,6 +1193,8 @@
     }
     setStatus(msg);
     state.view.setInteractive(false);
+    soundGameOver();
+    announce(msg);
 
     if (state.rated) {
       var rec = R.recordGame(state.profile, {
@@ -764,11 +1214,12 @@
   }
 
   /* ---------------- coach ---------------- */
-  function requestCoach(kind, extra) {
+  function requestCoach(kind, extra, question) {
     var ctx = {
       playerColor: state.playerColor,
       playerRank: R.labelForSkill(state.profile.skill),
-      extra: extra || ""
+      extra: extra || "",
+      question: question || ""
     };
     var box = $("#coachText");
     box.classList.add("thinking");
@@ -778,6 +1229,13 @@
       box.textContent = txt;
       updateCoachStatus(GT.coach.isAvailable());
     });
+  }
+
+  function askCoachQuestion() {
+    if (!state.game) return;
+    var inp = $("#coachAsk"), q = (inp.value || "").trim();
+    if (!q) return;
+    requestCoach("ask", "", q);
   }
 
   function askHint() {
@@ -821,8 +1279,7 @@
     return "Your move. Think about weak groups and big open areas.";
   }
 
-  function setCoach(t) { var b = $("#coachText"); b.classList.remove("thinking"); b.textContent = t; }
-  function updateCoachStatus(avail) {
+  function setCoach(t) { var b = $("#coachText"); b.classList.remove("thinking"); b.textContent = t; }  function updateCoachStatus(avail) {
     var el = $("#coachStatus");
     if (avail) { el.textContent = "Claude live"; el.classList.add("live"); }
     else { el.textContent = "offline tips"; el.classList.remove("live"); }
@@ -830,7 +1287,18 @@
 
   /* ---------------- rendering helpers ---------------- */
   function redraw() {
-    state.view.render(state.game.board, state.game.lastMove);
+    var overlay = null;
+    if (state.influence.on && state.influence.ownership) {
+      var own = state.influence.ownership, sz = state.influence.size;
+      if (state.influence.heat) {
+        overlay = { territory: ownershipTerritory(own, sz, 0.12), intensity: ownershipIntensity(own, sz) };
+      } else {
+        overlay = { territory: ownershipTerritory(own, sz, 0.30) };
+      }
+    } else if (state.estimate) {
+      overlay = { territory: state.game.territoryMap() };
+    }
+    state.view.render(state.game.board, state.game.lastMove, null, overlay);
     $("#capB").textContent = state.game.captures[BLACK];
     $("#capW").textContent = state.game.captures[WHITE];
     var tm = state.loaded ? "Loaded game — review with \u25C0 \u25B6" :
@@ -844,6 +1312,7 @@
   function updateAnalyzeBtn() {
     var show = state.game && (state.game.ended || state.loaded) && state.game.history.length >= 2;
     $("#analyzeBtn").hidden = !show;
+    if (!show) { $("#exportReviewBtn").hidden = true; state.reviewNotes = null; }
   }
 
   // Player-perspective "material" margin after the first `count` moves:
@@ -863,6 +1332,7 @@
   function analyzeGame() {
     var g = state.game, pc = state.playerColor, n = g.history.length;
     if (n < 2) return;
+    if (katagoReady) { katagoReview(); return; }   // engine-grade review when available
     var prev = marginAfter(0, pc), moments = [];
     for (var k = 1; k <= n; k++) {
       var cur = marginAfter(k, pc);
@@ -898,12 +1368,14 @@
       return;
     }
     var g = state.game, pc = state.playerColor;
+    state.reviewNotes = {};
     moments.forEach(function (m) {
       var li = document.createElement("li");
       li.className = "moment " + (m.against ? "bad" : "good");
       var who = m.mover === BLACK ? "\u25CF" : "\u25CB";
       var coord = g.history[m.ply - 1].move === PASS ? "pass" : GT.coach.coordName(g.size, g.history[m.ply - 1].move);
       var tag = m.against ? (m.mover === pc ? "your slip" : "tough for you") : (m.mover === pc ? "good move" : "they erred");
+      state.reviewNotes[m.ply] = coord + " — " + tag + " (swing " + (m.delta > 0 ? "+" : "") + m.delta.toFixed(0) + ").";
       li.innerHTML = "<span class='mv-no'>" + m.ply + "</span>" +
         "<span class='mv-stone'>" + who + "</span>" +
         "<span class='m-coord'>" + coord + "</span>" +
@@ -913,9 +1385,75 @@
       ol.appendChild(li);
     });
     ol.hidden = false;
+    $("#exportReviewBtn").hidden = false;
   }
 
+  /* Engine-grade review: KataGo win-rate after every move; biggest drops on the
+   * player's own moves are the instructive mistakes. */
+  function katagoReview() {
+    var g = state.game, pc = state.playerColor, n = g.history.length;
+    var winr = [];                          // winr[k] = player win-rate after k moves
+    var ol = $("#momentList"); ol.hidden = false;
+    var k = 0;
+    function setProgress() { ol.innerHTML = "<li class='moment'>KataGo reviewing… " + k + "/" + n + "</li>"; }
+    setProgress();
+    function step() {
+      if (k > n) { finishKatagoReview(winr); return; }
+      analyzePosition(buildPosition(k), function (res) {
+        if (res && res.winrateWhite != null) {
+          winr[k] = pc === WHITE ? res.winrateWhite : 1 - res.winrateWhite;
+        } else if (!katagoReady) {           // proxy died mid-review
+          ol.innerHTML = "<li class='moment bad'>KataGo became unavailable — falling back.</li>";
+          return;
+        } else {
+          winr[k] = k > 0 ? winr[k - 1] : 0.5;
+        }
+        k++; setProgress(); step();
+      });
+    }
+    step();
+  }
+
+  function finishKatagoReview(winr) {
+    var g = state.game, pc = state.playerColor, n = g.history.length, moments = [];
+    for (var k = 1; k <= n; k++) {
+      if (winr[k] == null || winr[k - 1] == null) continue;
+      var delta = (winr[k] - winr[k - 1]) * 100;     // player win-rate change, points
+      var mover = g.history[k - 1].color;
+      var against = (mover === pc) ? (delta < 0) : (delta > 0);
+      moments.push({ ply: k, mover: mover, delta: delta, against: against, swing: Math.abs(delta) });
+    }
+    var top = moments.slice().sort(function (a, b) {
+      return (b.swing + (b.against ? 1000 : 0)) - (a.swing + (a.against ? 1000 : 0));
+    }).filter(function (m) { return m.swing >= 4; }).slice(0, 5)
+      .sort(function (a, b) { return a.ply - b.ply; });
+    renderMoments(top);
+    var summary = top.map(function (m) {
+      var who = m.mover === BLACK ? "Black" : "White";
+      var coord = g.history[m.ply - 1].move === PASS ? "pass" : GT.coach.coordName(g.size, g.history[m.ply - 1].move);
+      return "move " + m.ply + " (" + who + " " + coord + "): win-rate " + (m.delta > 0 ? "+" : "") + m.delta.toFixed(0) + "%";
+    }).join("; ");
+    requestCoach("review", summary ? ("KataGo win-rate swings: " + summary + "." +
+      " The biggest drops on the student's own moves are the key mistakes.") : "");
+  }
+
+
   function setStatus(t) { $("#statusMsg").textContent = t; }
+
+  // Screen-reader announcement (aria-live). Toggle text so repeats are spoken.
+  function announce(t) {
+    var el = $("#srLive"); if (!el) return;
+    el.textContent = "";
+    setTimeout(function () { el.textContent = t; }, 30);
+  }
+  function announceMove(color, p, captured, game) {
+    var who = color === BLACK ? "Black" : "White";
+    var where = (p === PASS) ? "passes" : GT.coach.coordName(game.size, p);
+    var cap = (captured && captured.length) ? ", captures " + captured.length : "";
+    var next = game.ended ? "" : "; " + (game.toMove === BLACK ? "Black" : "White") + " to move";
+    announce(who + " " + where + cap + next + ".");
+  }
+
   function reasonText(r) {
     return ({ occupied: "That point is taken.", ko: "Ko: you can't recapture there yet — play elsewhere first.",
       suicide: "Illegal: that's self-capture (suicide).", superko: "Illegal: that repeats a previous board position.",
@@ -1046,8 +1584,11 @@
     $("#problemCategory").addEventListener("change", function () { rebuildProblemList(); openFirstUnsolved(); });
     $("#problemDifficulty").addEventListener("change", function () { rebuildProblemList(); openFirstUnsolved(); });
     $("#problemRandom").addEventListener("click", openRandomUnsolved);
+    $("#problemDaily").addEventListener("click", openDailyProblem);
     $("#problemNext").addEventListener("click", openNextInList);
+    $("#problemDue").addEventListener("click", openNextDue);
     populateCategorySelect();
+    updateDueButton();
   }
 
   function populateCategorySelect() {
@@ -1067,6 +1608,7 @@
 
   function enterProblems() {
     rebuildProblemList();
+    updateDueButton();
     if (prob.current && !prob.solved) return; // keep an in-progress problem
     openFirstUnsolved();
   }
@@ -1114,7 +1656,7 @@
       $("#problemFeedback").textContent = "";
       return;
     }
-    prob.current = p; prob.solved = false;
+    prob.current = p; prob.solved = false; prob.wrong = false;
     $("#problemTitle").textContent = p.title;
     $("#problemPrompt").textContent = (p.color === BLACK ? "Black" : "White") + " to play. " + p.hint;
     $("#problemFeedback").className = "lesson-step";
@@ -1144,6 +1686,145 @@
     openProblem(f[(idx + 1) % f.length]);
   }
 
+  // Deterministic "problem of the day": same pick for everyone, changes each date.
+  function openDailyProblem() {
+    var all = GT.problems.all();
+    if (!all.length) return;
+    var d = new Date();
+    var key = d.getFullYear() * 10000 + (d.getMonth() + 1) * 100 + d.getDate();
+    var h = key % 2147483647;
+    h = (h * 48271) % 2147483647;     // one Lehmer step so consecutive days differ a lot
+    var pick = all[h % all.length];
+    openProblem(pick);
+    $("#problemStatus").textContent = "Problem of the day — " +
+      d.toLocaleDateString(undefined, { month: "short", day: "numeric" }) +
+      (state.profile.problemsDone[pick.id] ? " (already solved \u2713)" : "");
+  }
+
+  /* ---------------- opening trainer (fuseki principles) ---------------- */
+  function bindOpeningControls() {
+    $("#openingShow").addEventListener("click", showOpeningAnswers);
+    $("#openingReset").addEventListener("click", function () { if (open.current) openDrill(open.current); });
+    $("#openingNext").addEventListener("click", openNextDrill);
+  }
+
+  function enterOpening() {
+    buildOpeningList();
+    if (!open.current) openDrill(GT.opening.drills[0]);
+  }
+
+  function buildOpeningList() {
+    var ul = $("#openingList");
+    ul.innerHTML = "";
+    var done = state.profile.openingsDone || {};
+    GT.opening.drills.forEach(function (d) {
+      var li = document.createElement("li");
+      li.innerHTML = "<span>" + d.title + "</span>" + (done[d.id] ? "<span class='done'>\u2713</span>" : "");
+      li.dataset.id = d.id;
+      li.addEventListener("click", function () { openDrill(d); });
+      ul.appendChild(li);
+    });
+    var total = GT.opening.drills.length;
+    var n = GT.opening.drills.filter(function (d) { return done[d.id]; }).length;
+    $("#openingSolvedCount").textContent = n + " / " + total + " done";
+    highlightOpening();
+  }
+
+  function highlightOpening() {
+    var id = open.current && open.current.id;
+    document.querySelectorAll("#openingList li").forEach(function (li) {
+      li.classList.toggle("active", li.dataset.id === id);
+    });
+  }
+
+  function openDrill(d) {
+    open.current = d; open.done = false;
+    open.game = GT.opening.buildGame(d);
+    $("#openingTitle").textContent = d.title;
+    $("#openingIntro").textContent = d.intro;
+    $("#openingPrompt").textContent = d.prompt;
+    $("#openingFeedback").className = "lesson-step";
+    $("#openingFeedback").textContent = "";
+    $("#openingStatus").textContent = (state.profile.openingsDone || {})[d.id] ? "Done \u2713 — try it again to confirm." : "";
+    open.view = new GT.BoardView($("#openingBoardHost"), {
+      size: GT.opening.N, hoverColor: d.toMove, onPlay: onOpeningPlay, showCoords: true
+    });
+    open.view.render(open.game.board, null);
+    highlightOpening();
+  }
+
+  function onOpeningPlay(p) {
+    var d = open.current, g = open.game;
+    if (!d || !g) return;
+    if (g.board[p] === BLACK || g.board[p] === WHITE) return;   // occupied
+    if (d.accept(p, g)) {
+      g.board[p] = d.toMove;
+      open.view.render(g.board, p, [{ p: p, cls: "good" }]);
+      open.done = true;
+      var fb = $("#openingFeedback"); fb.className = "lesson-step ok"; fb.textContent = d.ok;
+      soundPlace();
+      var done = state.profile.openingsDone || (state.profile.openingsDone = {});
+      if (!done[d.id]) { done[d.id] = true; R.save(state.profile); }
+      buildOpeningList();
+    } else {
+      var f = $("#openingFeedback"); f.className = "lesson-step bad"; f.textContent = d.bad;
+      soundIllegal();
+    }
+  }
+
+  function showOpeningAnswers() {
+    var d = open.current, g = open.game;
+    if (!d || !g) return;
+    var pts = GT.opening.solutionPoints(d, g).map(function (p) { return { p: p, cls: "good" }; });
+    open.view.render(g.board, null, pts);
+    var f = $("#openingFeedback"); f.className = "lesson-step"; f.textContent =
+      "Any highlighted point works. " + d.ok;
+  }
+
+  function openNextDrill() {
+    var drills = GT.opening.drills;
+    var idx = open.current ? drills.findIndex(function (d) { return d.id === open.current.id; }) : -1;
+    openDrill(drills[(idx + 1) % drills.length]);
+  }
+
+  /* ---------------- spaced repetition (SM-2-lite) for tsumego ---------------- */
+  var DAY = 86400000;
+  function srsRecord(id, good) {
+    var srs = state.profile.srs || (state.profile.srs = {});
+    var e = srs[id] || { reps: 0, interval: 0, ease: 2.3, due: 0 };
+    if (good) {
+      e.reps += 1;
+      e.interval = e.reps === 1 ? 1 : e.reps === 2 ? 3 : Math.round(e.interval * e.ease);
+      e.ease = Math.min(2.8, e.ease + 0.05);
+    } else {
+      e.reps = 0;
+      e.interval = 0;                       // due again very soon
+      e.ease = Math.max(1.3, e.ease - 0.2);
+    }
+    e.due = Date.now() + e.interval * DAY;
+    srs[id] = e;
+    R.save(state.profile);
+  }
+  function dueList() {
+    var srs = state.profile.srs || {}, now = Date.now(), out = [];
+    GT.problems.all().forEach(function (p) {
+      var e = srs[p.id];
+      if (e && e.due <= now) out.push(p);
+    });
+    return out;
+  }
+  function updateDueButton() {
+    var btn = $("#problemDue"); if (!btn) return;
+    var n = dueList().length;
+    btn.textContent = "Review due (" + n + ")";
+    btn.disabled = n === 0;
+  }
+  function openNextDue() {
+    var due = dueList();
+    if (!due.length) return;
+    openProblem(due[0]);
+  }
+
   function onProblemPlay(point) {
     if (!prob.current || prob.solved) return;
     var p = prob.current;
@@ -1151,6 +1832,7 @@
     var sols = GT.problems.solutionPoints(p);
     var box = $("#problemFeedback");
     if (sols.indexOf(point) < 0) {
+      prob.wrong = true;
       box.className = "lesson-step error";
       box.textContent = "Not the key point — try again. " + p.hint;
       return;
@@ -1158,6 +1840,7 @@
     // Correct point: play it (rules enforced) and confirm any capture requirement.
     var res = prob.game.play(point, p.color);
     if (!res.ok || (p.mustCapture && (!res.captured || res.captured.length === 0))) {
+      prob.wrong = true;
       box.className = "lesson-step error";
       box.textContent = "Hmm, that didn't work as expected — try again.";
       prob.game = GT.problems.buildGame(p);
@@ -1171,6 +1854,8 @@
     $("#problemStatus").textContent = "Solved \u2713";
     state.profile.problemsDone[p.id] = true;
     R.save(state.profile);
+    srsRecord(p.id, !prob.wrong);
+    updateDueButton();
     rebuildProblemList();
   }
 
@@ -1188,6 +1873,7 @@
     var res = GT.solver.solve(cg, origin, attacker, size * 3);
     if (!res.win) {
       box.className = "lesson-step error";
+      prob.wrong = true;
       box.textContent = "That lets the white stone escape — try again.";
       prob.view.render(prob.game.board, prob.game.lastMove);
       return;
@@ -1209,6 +1895,8 @@
     $("#problemStatus").textContent = "Solved \u2713";
     state.profile.problemsDone[p.id] = true;
     R.save(state.profile);
+    srsRecord(p.id, !prob.wrong);
+    updateDueButton();
     rebuildProblemList();
   }
 

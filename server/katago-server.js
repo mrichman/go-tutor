@@ -139,6 +139,35 @@ async function genmove(req) {
   return { move: (mv || "pass").trim() };
 }
 
+// Evaluate a position: win-rate, score lead, and per-point ownership (territory)
+// from KataGo's raw NN — a single fast eval, ideal for a teaching overlay.
+async function analyze(req) {
+  if (!engine || !engine.ready) throw new Error("engine not ready");
+  const size = req.size || 19;
+  const komi = (req.komi == null) ? 7.5 : req.komi;
+  await engine.send("boardsize " + size);
+  await engine.send("clear_board");
+  await engine.send("komi " + komi);
+  for (const m of (req.moves || [])) {
+    const c = m.color === "w" ? "white" : "black";
+    await engine.send("play " + c + " " + m.coord);
+  }
+  const raw = await engine.send("kata-raw-nn 0");
+  const winWhite = parseFloat((raw.match(/whiteWin\s+([0-9.eE-]+)/) || [])[1]);
+  const leadWhite = parseFloat((raw.match(/whiteLead\s+(-?[0-9.eE]+)/) || [])[1]);
+  let ownership = [];
+  const oi = raw.indexOf("whiteOwnership");
+  if (oi >= 0) {
+    ownership = (raw.slice(oi + "whiteOwnership".length).match(/-?\d+(?:\.\d+)?(?:[eE]-?\d+)?/g) || [])
+      .slice(0, size * size).map(Number);
+  }
+  return {
+    winrateWhite: isNaN(winWhite) ? null : winWhite,
+    leadWhite: isNaN(leadWhite) ? null : leadWhite,
+    ownership: ownership, size: size
+  };
+}
+
 /* ---------------- HTTP ---------------- */
 function cors(res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -171,6 +200,20 @@ const server = http.createServer((req, res) => {
       try { payload = JSON.parse(body || "{}"); }
       catch (e) { return sendJson(res, 400, { error: "bad json" }); }
       enqueue(() => genmove(payload))
+        .then((out) => sendJson(res, 200, out))
+        .catch((err) => sendJson(res, 502, { error: String(err && err.message || err) }));
+    });
+    return;
+  }
+
+  if (req.method === "POST" && req.url === "/analyze") {
+    let body = "";
+    req.on("data", (c) => { body += c; if (body.length > 2e6) req.destroy(); });
+    req.on("end", () => {
+      let payload;
+      try { payload = JSON.parse(body || "{}"); }
+      catch (e) { return sendJson(res, 400, { error: "bad json" }); }
+      enqueue(() => analyze(payload))
         .then((out) => sendJson(res, 200, out))
         .catch((err) => sendJson(res, 502, { error: String(err && err.message || err) }));
     });

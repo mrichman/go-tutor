@@ -4,7 +4,12 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Go Tutor — learn Baduk</title>
-  <link rel="stylesheet" href="css/style.css?v=13" />
+  <meta name="theme-color" content="#1b1410" />
+  <meta name="description" content="Adaptive single-player Go (Baduk) tutor: learn, play, and study tsumego offline." />
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="icons/icon.svg" />
+  <link rel="stylesheet" href="css/style.css?v=21" />
 </head>
 <body>
   <header class="topbar">
@@ -16,16 +21,21 @@
     <nav class="tabs">
       <button class="tab active" data-view="play">Play</button>
       <button class="tab" data-view="learn">Tutorial</button>
+      <button class="tab" data-view="opening">Opening</button>
       <button class="tab" data-view="problems">Problems</button>
       <button class="tab" data-view="progress">Progress</button>
     </nav>
     <div class="settings">
       <button id="soundToggle" class="icon-btn" title="Toggle sound">🔊</button>
+      <input id="volRange" type="range" min="0" max="100" step="5" value="80" title="Volume" aria-label="Volume" />
       <select id="themeSelect" title="Board theme" aria-label="Board theme">
         <option value="classic">Classic</option>
         <option value="dark">Dark</option>
         <option value="contrast">High contrast</option>
       </select>
+      <select id="profileSel" title="Player profile" aria-label="Player profile"></select>
+      <button id="profileNew" class="icon-btn" title="New profile">＋</button>
+      <button id="profileDel" class="icon-btn" title="Delete this profile">🗑</button>
     </div>
     <div class="rankbox" id="rankbox" title="Your estimated rank">
       <span class="rank-label" id="rankLabel">—</span>
@@ -103,6 +113,10 @@
             <span>Captures — Black: <b id="capB">0</b></span>
             <span>White: <b id="capW">0</b></span>
           </div>
+          <button id="influenceBtn" title="Show KataGo win-rate and territory estimate" hidden>Show influence (KataGo)</button>
+          <button id="heatBtn" title="Switch the influence overlay between graded heatmap and crisp dots" hidden>Heatmap</button>
+          <button id="estimateBtn" title="Rough offline score estimate (area + territory)">Estimate score</button>
+          <div id="winrateReadout" class="score-readout" hidden></div>
         </div>
 
         <div class="panel" id="scorePanel" hidden>
@@ -125,13 +139,27 @@
             <button id="histNext" title="Next">▶</button>
             <button id="histLive" title="Back to current position">Live</button>
           </div>
+          <div id="variationBar" class="variation-bar" hidden>
+            <span class="var-label">Exploring a variation</span>
+            <button id="varUndoBtn" title="Take back the last variation move">↶ Undo</button>
+            <button id="saveLineBtn" title="Save this variation as a named line">Save line</button>
+            <button id="varExitBtn" title="Discard the variation and return to the game">Return to game</button>
+          </div>
           <ol id="moveList" class="move-list"></ol>
+          <div id="linesPanel" class="lines-panel" hidden>
+            <h4>Saved lines</h4>
+            <ul id="lineList" class="line-list"></ul>
+          </div>
           <div class="sgf-controls">
             <button id="saveSgfBtn" title="Download this game as an SGF file">Save SGF</button>
             <button id="loadSgfBtn" title="Load a game from an SGF file">Load SGF</button>
+            <button id="importSgfBtn" title="Load several SGF files as a study library">Import collection</button>
             <button id="analyzeBtn" title="Analyze the finished game" hidden>Analyze</button>
+            <button id="exportReviewBtn" title="Download SGF with the review notes" hidden>Export SGF + notes</button>
             <input id="sgfFile" type="file" accept=".sgf,application/x-go-sgf,text/plain" hidden />
+            <input id="sgfCollection" type="file" accept=".sgf,application/x-go-sgf,text/plain" multiple hidden />
           </div>
+          <ul id="sgfLibrary" class="sgf-library" hidden></ul>
           <ol id="momentList" class="moment-list" hidden></ol>
         </div>
 
@@ -140,6 +168,10 @@
             <span id="coachStatus" class="coach-status" title="Claude coach connection">offline tips</span>
           </h3>
           <div id="coachText" class="coach-text">Start a game and I'll comment on the moves. Want live Claude coaching? See the README to run the local coach proxy.</div>
+          <div class="coach-ask">
+            <input id="coachAsk" type="text" placeholder="Ask the coach about this position…" aria-label="Ask the coach" />
+            <button id="coachAskBtn">Ask</button>
+          </div>
         </div>
       </aside>
     </section>
@@ -169,6 +201,33 @@
       </aside>
     </section>
 
+    <!-- ============ OPENING VIEW ============ -->
+    <section id="view-opening" class="view">
+      <div class="board-wrap">
+        <div id="openingBoardHost" class="board-host"></div>
+        <div class="board-foot">
+          <span id="openingStatus" class="status"></span>
+        </div>
+      </div>
+      <aside class="sidebar">
+        <div class="panel">
+          <h3>Opening drills <span id="openingSolvedCount" class="coach-status">0 done</span></h3>
+          <ul id="openingList" class="lesson-list"></ul>
+        </div>
+        <div class="panel">
+          <h3 id="openingTitle">Pick a drill</h3>
+          <p id="openingIntro" class="lesson-intro">Short, hands-on drills on opening principles — corners first, the 3rd/4th lines, approaching, blocking, and making a base.</p>
+          <div id="openingPrompt" class="lesson-step"></div>
+          <div id="openingFeedback" class="lesson-step"></div>
+          <div class="btn-grid">
+            <button id="openingShow">Show answers</button>
+            <button id="openingReset">Reset</button>
+            <button id="openingNext" class="primary">Next ▶</button>
+          </div>
+        </div>
+      </aside>
+    </section>
+
     <!-- ============ PROBLEMS VIEW ============ -->
     <section id="view-problems" class="view">
       <div class="board-wrap">
@@ -190,8 +249,12 @@
             </select>
           </div>
           <div class="problem-filters">
+            <button id="problemDaily" title="Today's problem — same for everyone, changes daily">★ Problem of the day</button>
             <button id="problemRandom" title="Jump to a random unsolved problem">Random unsolved</button>
             <button id="problemNext" title="Next problem in the list">Next ▶</button>
+          </div>
+          <div class="problem-filters">
+            <button id="problemDue" title="Review problems that are due (spaced repetition)">Review due (0)</button>
           </div>
           <ul id="problemList" class="lesson-list problem-list"></ul>
         </div>
@@ -242,18 +305,30 @@
     </section>
   </main>
 
+  <div id="srLive" class="sr-only" aria-live="polite" role="status"></div>
+
   <!-- scripts: classic, order matters; no build step.
        The ?v= query busts the browser cache when files change — bump it on edits. -->
-  <script src="js/engine.js?v=13"></script>
-  <script src="js/bot.js?v=13"></script>
-  <script src="js/ranking.js?v=13"></script>
-  <script src="js/tutorial.js?v=13"></script>
-  <script src="js/solver.js?v=13"></script>
-  <script src="js/generator.js?v=13"></script>
-  <script src="js/problems.js?v=13"></script>
-  <script src="js/sgf.js?v=13"></script>
-  <script src="js/coach.js?v=13"></script>
-  <script src="js/board.js?v=13"></script>
-  <script src="js/app.js?v=13"></script>
+  <script src="js/engine.js?v=21"></script>
+  <script src="js/bot.js?v=21"></script>
+  <script src="js/ranking.js?v=21"></script>
+  <script src="js/tutorial.js?v=21"></script>
+  <script src="js/opening.js?v=21"></script>
+  <script src="js/solver.js?v=21"></script>
+  <script src="js/generator.js?v=21"></script>
+  <script src="js/problems.js?v=21"></script>
+  <script src="js/sgf.js?v=21"></script>
+  <script src="js/coach.js?v=21"></script>
+  <script src="js/board.js?v=21"></script>
+  <script src="js/sound-data.js?v=21"></script>
+  <script src="js/app.js?v=21"></script>
+  <script>
+    // Register the PWA service worker (offline support). No-op on file:// .
+    if ("serviceWorker" in navigator && location.protocol.indexOf("http") === 0) {
+      window.addEventListener("load", function () {
+        navigator.serviceWorker.register("sw.js").catch(function () {});
+      });
+    }
+  </script>
 </body>
 </html>

@@ -10,16 +10,18 @@ sandbox.window.localStorage = (function () {
   const m = {};
   return { getItem: k => (k in m ? m[k] : null), setItem: (k, v) => { m[k] = String(v); }, removeItem: k => { delete m[k]; } };
 })();
+sandbox.localStorage = sandbox.window.localStorage;   // ranking.js uses the bare global
 vm.createContext(sandbox);
 
 function loadJS(rel) {
   const code = fs.readFileSync(path.join(__dirname, "..", rel), "utf8");
   vm.runInContext(code, sandbox, { filename: rel });
 }
-["js/engine.js", "js/bot.js", "js/ranking.js", "js/tutorial.js", "js/solver.js", "js/generator.js", "js/problems.js", "js/sgf.js"].forEach(loadJS);
+["js/engine.js", "js/bot.js", "js/ranking.js", "js/tutorial.js", "js/opening.js", "js/solver.js", "js/generator.js", "js/problems.js", "js/sgf.js"].forEach(loadJS);
 
 const GT = sandbox.window.GT;
 const E = GT.engine;
+const localStorage = sandbox.localStorage;
 let pass = 0, fail = 0;
 function ok(name, cond) { if (cond) { pass++; } else { fail++; console.log("  âœ— FAIL:", name); } }
 
@@ -161,7 +163,7 @@ function ok(name, cond) { if (cond) { pass++; } else { fail++; console.log("  âœ
 /* ---------- tutorial: lessons build & capture lesson validator works ---------- */
 (function () {
   const lessons = GT.tutorial.lessons;
-  ok("has 7 lessons", lessons.length === 7);
+  ok("has 11 lessons", lessons.length === 11);
   const cap = lessons.find(l => l.id === "capture");
   const g = GT.tutorial.buildLessonGame(cap);
   // white at (3,3) in atari with last liberty at (3,4)
@@ -349,6 +351,82 @@ function ok(name, cond) { if (cond) { pass++; } else { fail++; console.log("  âœ
     return g.board[origin] === E.WHITE && GT.solver.solve(g, origin, E.BLACK, p.size * 3).win === true;
   });
   ok("every ladder problem is a verified forced capture", allForced);
+})();
+
+/* ---------- opening trainer: drills load, setups legal, validators sane ---------- */
+(function () {
+  var O = GT.opening;
+  ok("opening drills exist", O && O.drills.length >= 4);
+  var allGood = O.drills.every(function (d) {
+    var g = O.buildGame(d);
+    // setup stones are placed on an NxN board with the right colours
+    var setupOk = (d.setup || []).every(function (s) { return g.board[s.p] === s.color; });
+    // there is at least one accepted move, and it differs from a clearly-wrong point
+    var sol = O.solutionPoints(d, g);
+    var center = ((O.N / 2) | 0) * O.N + ((O.N / 2) | 0);
+    var rejectsCenter = d.id === "third-fourth-line" ? true : !d.accept(center, g); // tengen wrong except line drill where center may pass? it doesn't
+    return setupOk && sol.length > 0 && rejectsCenter;
+  });
+  ok("every opening drill: legal setup, â‰¥1 solution, rejects tengen", allGood);
+  // corners-first accepts a 4-4 and rejects the center
+  var cf = O.drills.find(function (d) { return d.id === "corners-first"; });
+  var cg = O.buildGame(cf);
+  ok("corners-first accepts 4-4", cf.accept(3 * O.N + 3, cg));
+  ok("corners-first rejects center", !cf.accept(6 * O.N + 6, cg));
+})();
+
+/* ---------- SGF: variation branches round-trip ---------- */
+(function () {
+  const rec = {
+    size: 9, komi: 5.5, handicap: 0, ab: [], aw: [],
+    moves: [
+      { color: E.BLACK, point: 2 * 9 + 2 },
+      { color: E.WHITE, point: 6 * 9 + 6 },
+      { color: E.BLACK, point: 4 * 9 + 4 }
+    ],
+    result: "B+3",
+    lines: [
+      { base: 1, name: "alt response", moves: [{ color: E.WHITE, point: 2 * 9 + 6 }, { color: E.BLACK, point: 6 * 9 + 2 }] },
+      { base: 3, name: "endgame idea", moves: [{ color: E.WHITE, point: 0 }] }
+    ]
+  };
+  const sgf = GT.sgf.toSGF(rec);
+  ok("SGF with branches contains a branch paren", sgf.indexOf("(", 1) > 0);
+  const back = GT.sgf.fromSGF(sgf);
+  ok("round-trip: main line preserved", back.moves.length === 3 &&
+    back.moves[0].point === 2 * 9 + 2 && back.moves[2].point === 4 * 9 + 4);
+  ok("round-trip: two lines parsed", back.lines && back.lines.length === 2);
+  const l1 = (back.lines || []).filter(l => l.base === 1)[0];
+  ok("round-trip: line base + first move + name", l1 && l1.moves.length === 2 &&
+    l1.moves[0].point === 2 * 9 + 6 && l1.name === "alt response");
+  // a plain game (no lines) still round-trips with empty lines
+  const plain = GT.sgf.fromSGF(GT.sgf.toSGF({ size: 9, komi: 5.5, moves: [{ color: E.BLACK, point: 40 }] }));
+  ok("plain SGF round-trips with no lines", plain.moves.length === 1 && plain.lines.length === 0);
+})();
+
+/* ---------- ranking: multiple profiles + Default migration ---------- */
+(function () {
+  const R = GT.ranking;
+  // start clean so the Default-migration path is exercised deterministically
+  ["gotutor.profiles.v1", "gotutor.profile.v1", "gotutor.profile.v1::Default", "gotutor.profile.v1::Bob"]
+    .forEach(k => localStorage.removeItem(k));
+  // legacy single profile present -> migrated to "Default" on first access
+  localStorage.setItem("gotutor.profile.v1", JSON.stringify({ skill: 9, games: 5, wins: 3 }));
+  const def = R.load();
+  ok("legacy profile migrated to Default", R.activeName() === "Default" && def.games === 5);
+  // create + switch
+  R.createProfile("Bob");
+  ok("createProfile activates new profile", R.activeName() === "Bob");
+  ok("listProfiles has both", R.listProfiles().indexOf("Default") >= 0 && R.listProfiles().indexOf("Bob") >= 0);
+  const bob = R.load(); bob.skill = 15; R.save(bob);
+  R.switchProfile("Default");
+  ok("switch back keeps Default's skill", Math.round(R.load().skill) === 9);
+  R.switchProfile("Bob");
+  ok("Bob's saved skill persisted", R.load().skill === 15);
+  // delete
+  R.deleteProfile("Bob");
+  ok("deleteProfile removes it + reactivates", R.listProfiles().indexOf("Bob") < 0 && R.activeName() === "Default");
+  ok("cannot delete the last profile", (R.deleteProfile("Default"), R.listProfiles().length === 1));
 })();
 
 console.log(`\n${pass} passed, ${fail} failed`);

@@ -1,0 +1,14 @@
+{
+  "name": "Go Tutor — learn Baduk",
+  "short_name": "Go Tutor",
+  "description": "Adaptive single-player Go (Baduk) tutor: learn, play, and study tsumego — works offline.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#1b1410",
+  "theme_color": "#1b1410",
+  "icons": [
+    { "src": "icons/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

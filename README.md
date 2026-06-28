@@ -5,6 +5,8 @@ It adapts the opponent's strength to your progress, includes a hands-on tutorial
 and tracks an estimated rank that climbs as you improve.
 
 - **Plays offline, zero install.** Pure HTML/JS/CSS — just open `index.html`.
+- **Installable PWA.** Served over http(s) it registers a service worker and caches the app shell,
+  so it installs to your home screen / dock and runs fully offline after the first visit.
 - **Built-in opponent** that always makes legal moves and scales in strength.
 - **Adaptive difficulty + handicap** based on your running rank estimate.
 - **Interactive tutorial**: liberties, atari, capturing, escaping, ko, eyes/life, territory.
@@ -125,6 +127,28 @@ the app sends `maxVisits` per move (low = weak, high = strong), and when a human
 configured it sets the `humanSLProfile` from your current rank (e.g. `rank_8k`) so the
 opponent plays at roughly your level.
 
+When the proxy is running, a **Show influence (KataGo)** button appears in the Game panel: it
+overlays KataGo's estimated **territory** (per-point ownership dots) and shows a **win-rate +
+score** readout for the current position, refreshing as you play. This is a fast raw-NN estimate
+(`kata-raw-nn`), so the win-rate and score are quick approximations, not a deep search.
+A **Heatmap / Dots** toggle switches the overlay between a graded heatmap (dot size + opacity scale
+with how strongly each point is owned) and crisp binary territory dots; the readout shows your
+win-%, both sides' win-%, and the score lead.
+
+### Human-like play (rank-matched)
+
+KataGo throttled by visits still plays "inhumanly". For natural, rank-matched games, download
+KataGo's **human model** (e.g. `b18c384nbt-humanv0.bin.gz`) and run:
+
+```
+export KATAGO_HUMAN_MODEL=/path/to/b18c384nbt-humanv0.bin.gz
+just play-human
+```
+
+The proxy then sets `humanSLProfile` from your current estimated rank (e.g. `rank_8k`, `rank_2d`),
+so the opponent plays roughly at your level. (The human model is a separate download, not part of
+the Homebrew install.)
+
 **Tip — KataGo recommendations:** use the **CPU/Eigen** build with a smaller (e.g. ~15-block)
 network if you don't have a GPU; add the **human model** for the most natural beginner-friendly
 games.
@@ -164,24 +188,55 @@ but it does **not** play well. Use a real KataGo for actual strength.
 - **Save SGF / Load SGF**: export the current game to a standard `.sgf` file, or load one to
   replay it. A loaded game opens in review mode (history controls work; the bot is off and it's
   unrated) — ideal for studying saved or downloaded games.
-- **Analyze** (appears once a game ends or after loading an SGF): scans the game for the biggest
-  tactical swings (captures / stones lost), lists them as clickable **key moments** that jump to
-  that position, and feeds them to the coach for a sharper review. Note: this tracks *material*
-  (stones + captures), not territory — so it surfaces captures and blunders, not subtle endgame.
+- **Import collection**: pick several `.sgf` files at once to build a clickable study library;
+  each entry shows board size, move count and result. Click one to load it into review.
+- **Analyze** (appears once a game ends or after loading an SGF): lists the biggest mistakes as
+  clickable **key moments** that jump to that position, and feeds them to the coach.
+  - **With the KataGo proxy running**, this is an *engine-grade* review: it computes your
+    **win-rate after every move** and flags the moves where it dropped most (the real mistakes).
+  - **Without KataGo**, it falls back to a *material* swing scan (captures / stones lost), which
+    surfaces tactical blunders but not subtle positional loss.
+- **Export SGF + notes** (appears after Analyze): saves the game as an SGF with the review's key
+  moments attached as `C[]` move comments, plus a summary on the root node — readable in any SGF
+  viewer.
+- **Ask the coach**: type a free-form question in the coach panel and press Enter (or **Ask**) to
+  get an answer grounded in the current position. Uses live Claude when the proxy is running;
+  otherwise an offline position-aware tip.
+- **Explore variations**: while reviewing (or in a loaded game), click the board to branch into a
+  hypothetical line. Stones auto-alternate colour; **↶ Undo** takes back a variation move and
+  **Return to game** discards it.
+- **Save lines**: in a variation, press **Save line** to keep it as a named line (rename/delete in
+  the **Saved lines** panel; click one to replay it). Saved lines are written into **SGF** — exported
+  as standard `(...)` branches for other viewers, plus a lossless blob so they re-import exactly here.
+- **Estimate score**: a rough *offline* area/territory readout for the current position (the
+  KataGo influence overlay is the accurate version when the proxy runs). Best once boundaries
+  settle — early on it just counts stones + komi.
 
 **Tutorial tab**
-- Seven bite-size lessons. "Info" steps explain; "task" steps ask you to make a specific
-  move that's validated live. Completed lessons get a ✓.
+- Eleven bite-size lessons (board basics → liberties, capture, atari, ko, eyes, territory,
+  ladders, nets, cutting/connecting, endgame & counting). "Info" steps explain; "task" steps ask
+  you to make a specific move that's validated live. Completed lessons get a ✓.
+
+**Opening tab**
+- Hands-on **opening (fuseki) principle drills**: corners first, the 3rd/4th lines, approaching a
+  lone stone, blocking the 3-3 invasion, and extending to make a base. Each drill accepts *any*
+  move that satisfies the principle (geometry-checked, so feedback is always correct), with a
+  **Show answers** button that highlights every valid point. Completed drills get a ✓.
+- Note: these teach principles, not a hand-authored joseki dictionary — a full branching joseki
+  library is tracked in `BACKLOG.md`.
 
 **Problems tab**
 - **600+ tsumego (life-and-death) puzzles**, almost all procedurally generated and **verified by
   the rules engine** (each solution is simulated — a capture problem is only kept if the move
   actually captures, a connect problem only if it actually links the groups). Categories: capture
   & atari, life & death (eye shapes), connect & cut, endgame, plus hand-made fundamentals.
-- Filter by **category** and **difficulty (★/★★/★★★)**, jump to a **Random unsolved** problem, or
-  step through with **Next**. Wrong moves are rejected with a hint; the correct move shows an
-  explanation and marks the problem solved (tracked per problem; the set is deterministic so your
-  progress stays stable across reloads).
+- Filter by **category** and **difficulty (★/★★/★★★)**, grab the **★ Problem of the day** (a
+  deterministic date-seeded pick — the same for everyone, changes daily), jump to a **Random
+  unsolved** problem, step through with **Next**, or hit **Review due** for **spaced repetition** —
+  solved problems are scheduled (SM-2-style) and resurface over time, with ones you missed coming
+  back sooner.
+  Wrong moves are rejected with a hint; the correct move shows an explanation and marks it solved
+  (tracked per problem; the set is deterministic so your progress stays stable across reloads).
 - Honest caveat: capture/connect/endgame/ladder solutions are *proven* by simulation (ladders
   via a depth-limited capture solver). Life-and-death problems use the **textbook vital points**
   of standard eye shapes (straight-three, bent-three, pyramid-four); legality is engine-checked,
@@ -196,12 +251,21 @@ but it does **not** play well. Use a real KataGo for actual strength.
   by category. **Reset** wipes everything.
 
 **Settings & shortcuts**
-- Top bar: **sound** toggle and **board theme** (Classic / Dark / High-contrast), both persisted.
+- Top bar: **sound** toggle, a **volume slider** (persisted), and **board theme** (Classic / Dark /
+  High-contrast), all persisted.
+- **Multiple profiles**: a profile selector in the top bar (with **＋** new / **🗑** delete) keeps
+  separate rank, history, and progress per learner on one device. Your existing data migrates to a
+  **Default** profile automatically.
 - New-game panel: **Move speed** (Normal / Fast / Instant) controls the opponent's reply delay.
+- **Accessibility**: the board is keyboard-operable — **Tab** to focus it, **arrow keys** move a
+  cursor, **Enter/Space** plays. Moves, captures, passes, illegal attempts, and game-end are
+  announced via an `aria-live` region for screen readers; controls show visible focus rings.
 - Keyboard: **←/→** step through move history (Play), **p** passes, **n** next problem and **r**
   reset problem (Problems). **Ctrl/⌘ + scroll** zooms the play board.
-- Stones placing and captures play short tones; captured stones flash; reviewing shows move numbers.
-
+- Stone placement/captures play a **pre-rendered stone-click sample** (embedded as a base64 WAV
+  data-URI in `js/sound-data.js`, generated by `scripts/gen-click.js`; swap that constant for your
+  own recording to change it). Captured stones flash; reviewing shows move numbers. Passes, illegal
+  clicks, and game-over each play a distinct synthesized tone; the volume slider scales everything.
 ---
 
 ## Ranking model (brief)

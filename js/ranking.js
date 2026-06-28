@@ -18,7 +18,32 @@
 
   var MIN_SKILL = 0;     // 18k
   var MAX_SKILL = 19;    // 2d
-  var STORE_KEY = "gotutor.profile.v1";
+  var STORE_KEY = "gotutor.profile.v1";          // legacy / migration source
+  var REG_KEY = "gotutor.profiles.v1";           // { active, names:[] }
+  var activeName = null;                          // resolved on first load()
+
+  function profileKey(name) { return STORE_KEY + "::" + encodeURIComponent(name); }
+
+  function readJSON(key) {
+    try { var raw = localStorage.getItem(key); return raw ? JSON.parse(raw) : null; }
+    catch (e) { return null; }
+  }
+  function writeJSON(key, val) {
+    try { localStorage.setItem(key, JSON.stringify(val)); } catch (e) { /* storage may be unavailable */ }
+  }
+
+  // Build the registry on first run, migrating any legacy single profile to "Default".
+  function ensureInit() {
+    var reg = readJSON(REG_KEY);
+    if (reg && reg.names && reg.names.length) { activeName = reg.active || reg.names[0]; return reg; }
+    reg = { active: "Default", names: ["Default"] };
+    var legacy = readJSON(STORE_KEY);
+    if (legacy && !readJSON(profileKey("Default"))) writeJSON(profileKey("Default"), legacy);
+    writeJSON(REG_KEY, reg);
+    activeName = "Default";
+    return reg;
+  }
+
 
   function labelForSkill(skill) {
     var s = Math.max(MIN_SKILL, Math.min(MAX_SKILL, Math.round(skill)));
@@ -55,34 +80,69 @@
       history: [],           // [{when, size, won, margin, botSkill, handicap, skillAfter}]
       tutorialsDone: {},     // lessonId -> true
       problemsDone: {},      // problemId -> true
+      openingsDone: {},      // opening-drill id -> true
+      srs: {},               // problemId -> {due, interval(days), reps, ease} spaced-repetition
       lastSize: 19,
       boardZoom: null,       // play-board zoom percent (null = fit on first load)
       soundOn: true,         // sound effects
+      soundVolume: 0.8,      // master volume 0..1
       theme: "classic",      // board/UI theme
       moveSpeed: "normal"    // bot move delay: instant | fast | normal
     };
   }
 
   function load() {
-    try {
-      var raw = localStorage.getItem(STORE_KEY);
-      if (!raw) return defaultProfile();
-      var p = JSON.parse(raw);
-      var d = defaultProfile();
-      for (var k in d) if (!(k in p)) p[k] = d[k];
-      return p;
-    } catch (e) { return defaultProfile(); }
+    var reg = ensureInit();
+    var p = readJSON(profileKey(reg.active)) || readJSON(STORE_KEY) || defaultProfile();
+    var d = defaultProfile();
+    for (var k in d) if (!(k in p)) p[k] = d[k];
+    return p;
   }
 
   function save(profile) {
-    try { localStorage.setItem(STORE_KEY, JSON.stringify(profile)); }
-    catch (e) { /* storage may be unavailable on file:// in some browsers */ }
+    if (!activeName) ensureInit();
+    writeJSON(profileKey(activeName), profile);
   }
 
   function reset() {
     var p = defaultProfile();
     save(p);
     return p;
+  }
+
+  /* ---- multiple profiles ---- */
+  function listProfiles() { return ensureInit().names.slice(); }
+  function getActiveName() { ensureInit(); return activeName; }
+
+  function switchProfile(name) {
+    var reg = ensureInit();
+    if (reg.names.indexOf(name) < 0) return load();
+    reg.active = name; activeName = name; writeJSON(REG_KEY, reg);
+    return load();
+  }
+
+  // Create (and activate) a new profile. Returns the new profile.
+  function createProfile(name) {
+    name = String(name || "").trim();
+    var reg = ensureInit();
+    if (!name) return load();
+    if (reg.names.indexOf(name) < 0) {
+      reg.names.push(name);
+      writeJSON(profileKey(name), defaultProfile());
+    }
+    reg.active = name; activeName = name; writeJSON(REG_KEY, reg);
+    return load();
+  }
+
+  // Delete a profile (never the last one). Returns the resulting active profile.
+  function deleteProfile(name) {
+    var reg = ensureInit();
+    if (reg.names.length <= 1 || reg.names.indexOf(name) < 0) return load();
+    reg.names = reg.names.filter(function (n) { return n !== name; });
+    try { localStorage.removeItem(profileKey(name)); } catch (e) {}
+    if (reg.active === name) reg.active = reg.names[0];
+    activeName = reg.active; writeJSON(REG_KEY, reg);
+    return load();
   }
 
   /* Pick the bot's target skill + handicap for the next rated game.
@@ -171,6 +231,8 @@
     strengthFromBotSkill: strengthFromBotSkill,
     defaultProfile: defaultProfile,
     load: load, save: save, reset: reset,
+    listProfiles: listProfiles, activeName: getActiveName,
+    switchProfile: switchProfile, createProfile: createProfile, deleteProfile: deleteProfile,
     recommendOpponent: recommendOpponent,
     expectedScore: expectedScore,
     recordGame: recordGame,
